@@ -225,12 +225,11 @@ table.stmt tbody td { padding: 7px 12px; border-bottom: 1px solid var(--line); t
 table.stmt tbody td:first-child { text-align: left; white-space: normal; }
 table.stmt tbody tr.section td:first-child { font-weight: 700; padding-top: 14px; }
 table.stmt tbody tr.indent td:first-child { padding-left: 26px; color: var(--ink); }
-table.stmt tbody tr.total td { font-weight: 700; background: var(--gold-soft); border-top: 1.5px solid var(--navy); border-bottom: none; }
+table.stmt tbody tr.total td { font-weight: 700; border-top: 1.5px solid var(--navy); border-bottom: none; }
 table.stmt tbody tr.bold td { font-weight: 700; }
 table.stmt tbody tr.spacer td { padding: 4px; border: none; }
 table.stmt .note-col { color: var(--muted); text-align: center; width: 44px; }
 table.stmt tbody tr:hover td { background: color-mix(in srgb, var(--gold-soft) 45%, transparent); }
-table.stmt tbody tr.total:hover td { background: var(--gold-soft); }
 
 /* Editable TB grid -- flat spreadsheet style, with the header row frozen to
    the top and the totals row frozen to the bottom of its own scroll pane,
@@ -616,7 +615,6 @@ table.tb-grid td.del-col { width: 34px; text-align: center; background: #F4F5F8;
     padding: 18mm 16mm; margin: 0; box-sizing: border-box;
   }
   table.stmt thead th { background: #0B0F1D !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  table.stmt tbody tr.total td { background: #EAECF2 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .print-page-break { break-before: page; }
   .print-only { display: block; }
 }
@@ -1768,7 +1766,7 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
     opts = opts || {};
     const { pyLabel, cyLabel } = years();
     const showNote = opts.showNote !== false;
-    let head = `<thead><tr><th>${opts.h0 || ""}</th>${showNote ? '<th class="note-col">Note</th>' : ""}<th>${opts.pyLabel || pyLabel}</th><th>${opts.cyLabel || cyLabel}</th></tr></thead>`;
+    let head = `<thead><tr><th>${opts.h0 || ""}</th>${showNote ? '<th class="note-col">Note(s)</th>' : ""}<th>${opts.pyLabel || pyLabel}</th><th>${opts.cyLabel || cyLabel}</th></tr></thead>`;
     let body = "<tbody>";
     rows.forEach((r) => {
       if (r.spacer) { body += `<tr class="spacer"><td colspan="${showNote ? 4 : 3}"></td></tr>`; return; }
@@ -2471,37 +2469,51 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
   function viewSFP() {
     const s = compiled.sfp.sections;
     const rows = [];
-    rows.push({ label: "ASSETS", section: true });
-    rows.push({ label: "Non-current assets", bold: true });
-    // The full Non-current assets mapping tree covers many template
-    // categories a given entity won't use (e.g. "Loans to (from)
-    // beneficiaries" for a Pty Ltd) -- only show a line once something is
-    // actually mapped to it, same rule as the notes above.
-    const ALWAYS_SHOW_NCA = new Set(["NCA_PPE", "NCA_INTANGIBLES", "NCA_INVESTMENTS"]);
-    s["Non-current assets"].rows.forEach((r) => {
-      const isZero = Math.abs(r.py) < 0.5 && Math.abs(r.cy) < 0.5;
-      if (isZero && !ALWAYS_SHOW_NCA.has(r.code)) return;
-      rows.push({ label: r.label, py: r.py, cy: r.cy, indent: true, note: r.note ? NOTE_NUM[r.note] : "" });
-    });
-    rows.push({ spacer: true });
-    rows.push({ label: "Current assets", bold: true });
-    s["Current assets"].rows.forEach((r) => rows.push({ label: r.label, py: r.py, cy: r.cy, indent: true, note: r.note ? NOTE_NUM[r.note] : "" }));
-    rows.push({ label: "Total assets", isTotal: true, py: compiled.sfp.total_assets.py, cy: compiled.sfp.total_assets.cy });
-    rows.push({ spacer: true });
-    rows.push({ label: "EQUITY AND LIABILITIES", section: true });
-    rows.push({ label: "Equity", bold: true });
-    s["Equity"].rows.forEach((r) => rows.push({ label: r.label, py: r.py, cy: r.cy, indent: true, note: r.code === "EQ_RETAINED" ? "" : (r.note ? NOTE_NUM[r.note] : "") }));
-    rows.push({ label: "Total equity", isTotal: true, py: compiled.sfp.total_equity.py, cy: compiled.sfp.total_equity.cy });
-    rows.push({ spacer: true });
-    rows.push({ label: "Non-current liabilities", bold: true });
-    s["Non-current liabilities"].rows.forEach((r) => rows.push({ label: r.label, py: r.py, cy: r.cy, indent: true, note: r.note ? NOTE_NUM[r.note] : "" }));
-    rows.push({ spacer: true });
-    rows.push({ label: "Current liabilities", bold: true });
-    s["Current liabilities"].rows.forEach((r) => rows.push({ label: r.label, py: r.py, cy: r.cy, indent: true, note: r.note ? NOTE_NUM[r.note] : "" }));
-    rows.push({ label: "Total liabilities", isTotal: true, py: compiled.sfp.total_liabilities.py, cy: compiled.sfp.total_liabilities.cy });
-    rows.push({ label: "Total equity and liabilities", isTotal: true, py: compiled.sfp.total_equity_and_liabilities.py, cy: compiled.sfp.total_equity_and_liabilities.cy });
 
-    return afsPage("sfp", "Statement of Financial Position", statementTable(rows));
+    // Only show a line once it's actually non-zero in at least one year --
+    // the line-item template covers many categories (26 possible
+    // non-current asset types alone) that most entities never use, and a
+    // real AFS never lists a blank "-" line for something that was never
+    // mapped. Pushes a bold group heading (e.g. "Current Assets") followed
+    // by its non-zero rows, then -- only when there's more than one row,
+    // matching how these are conventionally typeset -- an unlabelled bold
+    // subtotal with a rule above it. Returns the group's total so the
+    // caller can roll it into the section grand total.
+    function pushGroup(label, groupRows) {
+      const shown = groupRows.filter((r) => Math.abs(r.py) >= 0.5 || Math.abs(r.cy) >= 0.5);
+      if (!shown.length) return { py: 0, cy: 0 };
+      rows.push({ label, bold: true });
+      shown.forEach((r) => rows.push({ label: r.label, py: r.py, cy: r.cy, indent: true, note: r.note }));
+      const py = shown.reduce((a, r) => a + r.py, 0), cy = shown.reduce((a, r) => a + r.cy, 0);
+      if (shown.length > 1) rows.push({ label: "", isTotal: true, py, cy });
+      return { py, cy };
+    }
+    const withNotes = (section) => s[section].rows.map((r) => ({ ...r, note: r.note ? NOTE_NUM[r.note] : "" }));
+
+    rows.push({ label: "Assets", section: true });
+    pushGroup("Non-Current Assets", withNotes("Non-current assets"));
+    pushGroup("Current Assets", withNotes("Current assets"));
+    rows.push({ label: "Total Assets", isTotal: true, py: compiled.sfp.total_assets.py, cy: compiled.sfp.total_assets.cy });
+    rows.push({ spacer: true });
+
+    rows.push({ label: "Equity and Liabilities", section: true });
+    const equityRows = s["Equity"].rows.map((r) => ({
+      ...r,
+      // "Retained earnings" reads as "Accumulated loss" once it's in
+      // deficit -- standard convention, and no note reference either way.
+      label: r.code === "EQ_RETAINED" && r.cy < 0 ? "Accumulated loss" : r.label,
+      note: r.code === "EQ_RETAINED" ? "" : (r.note ? NOTE_NUM[r.note] : ""),
+    }));
+    pushGroup("Equity", equityRows);
+    rows.push({ spacer: true });
+    rows.push({ label: "Liabilities", bold: true });
+    pushGroup("Non-Current Liabilities", withNotes("Non-current liabilities"));
+    pushGroup("Current Liabilities", withNotes("Current liabilities"));
+    rows.push({ label: "Total Liabilities", isTotal: true, py: compiled.sfp.total_liabilities.py, cy: compiled.sfp.total_liabilities.cy });
+    rows.push({ label: "Total Equity and Liabilities", isTotal: true, py: compiled.sfp.total_equity_and_liabilities.py, cy: compiled.sfp.total_equity_and_liabilities.cy });
+
+    const title = `Statement of Financial Position as at ${fmtDate(STATE.entity.financial_year_end)}`;
+    return afsPage("sfp", title, statementTable(rows));
   }
 
   // ------------------------------------------------------------------
@@ -2509,22 +2521,53 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
   // ------------------------------------------------------------------
   function viewSCI() {
     const py = compiled.sci.py, cy = compiled.sci.cy;
-    const rows = [
-      { label: "Revenue", py: py.revenue, cy: cy.revenue, note: NOTE_NUM.REVENUE },
-      { label: "Cost of sales", py: -py.cost_of_sales, cy: -cy.cost_of_sales },
-      { label: "Gross profit", isTotal: true, py: py.gross_profit, cy: cy.gross_profit },
-      { label: "Other income", py: py.other_income, cy: cy.other_income },
-      { label: "Operating expenses", py: -py.total_operating_expenses, cy: -cy.total_operating_expenses, note: NOTE_NUM.OPERATINGPROFIT },
-      { label: "Operating profit", isTotal: true, py: py.operating_profit, cy: cy.operating_profit },
-      { label: "Finance income", py: py.finance_income, cy: cy.finance_income, note: NOTE_NUM.FINANCE },
-      { label: "Finance costs", py: -py.finance_costs, cy: -cy.finance_costs, note: NOTE_NUM.FINANCE },
-      { label: "Profit before taxation", isTotal: true, py: py.profit_before_tax, cy: cy.profit_before_tax },
-      { label: "Taxation", py: -py.tax_expense, cy: -cy.tax_expense, note: NOTE_NUM.TAX },
-      { label: "Profit for the year", isTotal: true, py: py.profit_for_year, cy: cy.profit_for_year },
-      { spacer: true },
-      { label: "Other comprehensive income", py: 0, cy: 0 },
-      { label: "Total comprehensive income for the year", isTotal: true, py: py.total_comprehensive_income, cy: cy.total_comprehensive_income },
-    ];
+    const isZero = (a, b) => Math.abs(a) < 0.5 && Math.abs(b) < 0.5;
+    const rows = [];
+
+    rows.push({ label: "Revenue", py: py.revenue, cy: cy.revenue, note: NOTE_NUM.REVENUE });
+    if (!isZero(py.cost_of_sales, cy.cost_of_sales)) rows.push({ label: "Cost of sales", py: -py.cost_of_sales, cy: -cy.cost_of_sales });
+    rows.push({ label: "Gross profit", isTotal: true, py: py.gross_profit, cy: cy.gross_profit });
+    if (!isZero(py.other_income, cy.other_income)) rows.push({ label: "Other income", py: py.other_income, cy: cy.other_income });
+
+    // Itemised operating expenses: employee costs and depreciation are
+    // single aggregate lines; "other operating expenses" is broken down
+    // per trial-balance account (Accounting fees, Bank charges, etc.),
+    // all combined and sorted alphabetically to match a typical
+    // CaseWare/Draftworx-style compiled AFS face.
+    function opexAccountRows() {
+      const pyList = compiled.notes.OPEX.py, cyList = compiled.notes.OPEX.cy;
+      const labels = new Set([...pyList.map((r) => r.account_name), ...cyList.map((r) => r.account_name)]);
+      return [...labels].map((label) => ({
+        label,
+        py: (pyList.find((r) => r.account_name === label) || {}).value || 0,
+        cy: (cyList.find((r) => r.account_name === label) || {}).value || 0,
+      }));
+    }
+    const opexItems = [
+      { label: "Employee costs", py: py.employee_costs, cy: cy.employee_costs },
+      { label: "Depreciation and amortisation", py: py.depreciation_amortisation, cy: cy.depreciation_amortisation },
+      ...opexAccountRows(),
+    ].sort((a, b) => a.label.localeCompare(b.label));
+    const opexShown = opexItems.filter((r) => !isZero(r.py, r.cy));
+    if (opexShown.length) {
+      rows.push({ label: "Operating expenses", bold: true });
+      opexShown.forEach((r) => rows.push({ label: r.label, py: -r.py, cy: -r.cy, indent: true }));
+      if (opexShown.length > 1) rows.push({ label: "", isTotal: true, py: -py.total_operating_expenses, cy: -cy.total_operating_expenses, note: NOTE_NUM.OPERATINGPROFIT });
+    }
+
+    rows.push({ label: cy.operating_profit < 0 ? "Operating loss" : "Operating profit", isTotal: true, py: py.operating_profit, cy: cy.operating_profit });
+    if (!isZero(py.finance_income, cy.finance_income)) rows.push({ label: "Finance income", py: py.finance_income, cy: cy.finance_income, note: NOTE_NUM.FINANCE });
+    if (!isZero(py.finance_costs, cy.finance_costs)) rows.push({ label: "Finance costs", py: -py.finance_costs, cy: -cy.finance_costs, note: NOTE_NUM.FINANCE });
+    rows.push({ label: "Profit before taxation", isTotal: true, py: py.profit_before_tax, cy: cy.profit_before_tax });
+    if (!isZero(py.tax_expense, cy.tax_expense)) rows.push({ label: "Taxation", py: -py.tax_expense, cy: -cy.tax_expense, note: NOTE_NUM.TAX });
+    rows.push({ label: cy.profit_for_year < 0 ? "Loss for the year" : "Profit for the year", isTotal: true, py: py.profit_for_year, cy: cy.profit_for_year });
+    rows.push({ spacer: true });
+    rows.push({ label: "Other comprehensive income", py: 0, cy: 0 });
+    rows.push({
+      label: cy.total_comprehensive_income < 0 ? "Total comprehensive loss for the year" : "Total comprehensive income for the year",
+      isTotal: true, py: py.total_comprehensive_income, cy: cy.total_comprehensive_income,
+    });
+
     return afsPage("sci", "Statement of Comprehensive Income", statementTable(rows));
   }
 
