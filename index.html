@@ -625,6 +625,40 @@ table.tb-grid td.del-col { width: 34px; text-align: center; background: #F4F5F8;
   .stmt-ribbon { left: 0; }
 }
 
+/* Adjusting Journal Entries form ------------------------------------ */
+.journal-form-fields { display: flex; gap: 14px; flex-wrap: wrap; margin: 14px 0 18px; }
+.journal-form-fields .field { flex: 1 1 160px; }
+.journal-form-fields textarea {
+  border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px;
+  background: var(--surface); color: var(--ink); font: inherit; resize: vertical; min-height: 38px;
+}
+.journal-form-fields textarea:focus { border-color: var(--gold); outline: none; }
+table.journal-lines tfoot td { font-weight: 700; border-top: 1.5px solid var(--navy); background: #fff; }
+td.status-diff-bad, span.status-diff-bad, #journal-total.status-diff-bad { color: var(--danger) !important; font-weight: 700; }
+
+/* Persistent Balance Check bar --------------------------------------- */
+.balance-bar {
+  background: var(--surface); border-bottom: 1px solid var(--line);
+  padding: 10px 26px; font-size: 12.5px;
+}
+.balance-bar[hidden] { display: none; }
+.balance-bar-collapsed { display: flex; align-items: center; gap: 8px; color: var(--muted); font-weight: 600; }
+.balance-bar-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.balance-bar-title { font-weight: 700; color: var(--ink); }
+.balance-bar-sub { color: var(--muted); flex: 1; }
+.balance-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; display: inline-block; }
+.balance-dot.ok { background: var(--success); }
+.balance-dot.bad { background: var(--danger); }
+table.balance-bar-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+table.balance-bar-table th { text-align: right; color: var(--muted); font-weight: 600; padding: 2px 8px; }
+table.balance-bar-table th:first-child { text-align: left; }
+table.balance-bar-table td { padding: 3px 8px; vertical-align: middle; }
+table.balance-bar-table td.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--danger); font-weight: 700; }
+table.balance-bar-table td:first-child { display: flex; align-items: center; gap: 7px; color: var(--ink); }
+.balance-bar .link-btn { background: none; border: none; color: var(--gold-dark, #8A6D1E); font-weight: 600; cursor: pointer; padding: 0; font-size: 12px; }
+.balance-bar .icon-btn { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 16px; line-height: 1; padding: 2px 4px; }
+.balance-bar .icon-btn:hover { color: var(--ink); }
+
 </style>
 </head>
 <body>
@@ -715,6 +749,7 @@ table.tb-grid td.del-col { width: 34px; text-align: center; background: #F4F5F8;
       </button>
       <div class="nav-items" id="nav-items-workpapers">
         <button class="nav-item" data-nav="tb"><span class="dot"></span>Trial Balance</button>
+        <button class="nav-item" data-nav="journals"><span class="dot"></span>Adjusting Journal Entries</button>
         <button class="nav-item" data-nav="supp"><span class="dot"></span>Supplementary Data</button>
       </div>
     </div>
@@ -746,6 +781,7 @@ table.tb-grid td.del-col { width: 34px; text-align: center; background: #F4F5F8;
       </div>
       <div class="status-row" id="status-row"></div>
     </div>
+    <div class="balance-bar no-print" id="balance-bar" hidden></div>
     <main class="content" id="main"></main>
   </div>
 
@@ -1155,6 +1191,7 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
     return d.toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
   }
   function fmtYear(iso) { return new Date(iso + "T00:00:00Z").getUTCFullYear(); }
+  function todayISO() { return new Date().toISOString().slice(0, 10); }
   // Python's round() uses round-half-to-even; JS Math.round rounds half away
   // from zero. The trial balance figures were generated with Python's round(),
   // so recomputed disclosure figures (e.g. tax at the statutory rate) need the
@@ -1617,6 +1654,10 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
     }
     newEntity.date_approved = "";
     newEntity.report_issue_date = "";
+    // Audit trail only -- when this year's file was actually created via
+    // roll-forward, using today's real date (not the entity's own
+    // financial year end). Shown as a note on the Status page.
+    newEntity.rolled_forward_on = todayISO();
 
     const newTbRows = old.tb_rows.map((r) => ({
       account_code: r.account_code,
@@ -1697,6 +1738,12 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
   let STATE = null;
   let VIEW = "home";
   let compiled = null;
+  // In-progress Adjusting Journal Entry being composed/edited -- ephemeral,
+  // not persisted -- see viewJournals() and the journal-* actions below.
+  let journalDraft = null;
+  // Whether the persistent Balance Check bar is collapsed -- ephemeral,
+  // resets to visible each time the app loads. See renderBalanceBar().
+  let balanceBarHidden = false;
 
   function recompute() {
     compiled = IFRSEngine.compile(STATE.line_items, STATE.tb_rows, STATE.supplementary);
@@ -1766,7 +1813,7 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
     opts = opts || {};
     const { pyLabel, cyLabel } = years();
     const showNote = opts.showNote !== false;
-    let head = `<thead><tr><th>${opts.h0 || ""}</th>${showNote ? '<th class="note-col">Note(s)</th>' : ""}<th>${opts.pyLabel || pyLabel}</th><th>${opts.cyLabel || cyLabel}</th></tr></thead>`;
+    let head = `<thead><tr><th>${opts.h0 || ""}</th>${showNote ? '<th class="note-col">Note(s)</th>' : ""}<th>${opts.cyLabel || cyLabel}</th><th>${opts.pyLabel || pyLabel}</th></tr></thead>`;
     let body = "<tbody>";
     rows.forEach((r) => {
       if (r.spacer) { body += `<tr class="spacer"><td colspan="${showNote ? 4 : 3}"></td></tr>`; return; }
@@ -1778,7 +1825,7 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
       const hasNums = r.py !== undefined || r.cy !== undefined;
       body += `<tr class="${classes.join(" ")}"><td>${escapeHtml(r.label)}</td>`;
       if (showNote) body += `<td class="note-col">${r.note || ""}</td>`;
-      body += `<td class="num">${hasNums ? fmt(r.py) : ""}</td><td class="num">${hasNums ? fmt(r.cy) : ""}</td></tr>`;
+      body += `<td class="num">${hasNums ? fmt(r.cy) : ""}</td><td class="num">${hasNums ? fmt(r.py) : ""}</td></tr>`;
     });
     body += "</tbody>";
     return `<div class="table-wrap"><table class="stmt">${head}${body}</table></div>`;
@@ -1953,7 +2000,13 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
           ${rows}
         </tbody>
       </table>
-      <p class="status-note">N/A -- this file doesn't yet carry a supporting workpaper for that reconciliation. Ask to have any of them added (each needs its own movement schedule in Supplementary Data) and a genuine check will replace the N/A.</p>`;
+      <p class="status-note">N/A -- this file doesn't yet carry a supporting workpaper for that reconciliation. Ask to have any of them added (each needs its own movement schedule in Supplementary Data) and a genuine check will replace the N/A.</p>
+      <div class="card" style="margin-top:20px;">
+        <h3>Roll forward to next year</h3>
+        <p class="lede" style="margin-top:0;">Creates a new client file for the year ending ${escapeHtml(STATE.entity.financial_year_end ? fmtDate(yearsBack(STATE.entity.financial_year_end, -1)) : "next year")}, carrying forward the trial balance's closing balances, retained earnings, cash and cash equivalents, and the asset registers. This file is left untouched.</p>
+        <button class="btn small primary" data-action="rollforward-client" data-client="${CURRENT_ID}">Roll forward to next year</button>
+        ${STATE.entity.rolled_forward_on ? `<p class="status-note" style="margin-top:10px;">This file was itself rolled forward on ${escapeHtml(fmtDate(STATE.entity.rolled_forward_on))}.</p>` : ""}
+      </div>`;
 
     return afsPage("status", "Status", body, { periodPhrase: `as at ${fmtDate(STATE.entity.financial_year_end)}` });
   }
@@ -2379,6 +2432,107 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
   function resizeHandle(i) { return `<span class="col-resize-handle" data-col-resize="${i}"></span>`; }
 
   // ------------------------------------------------------------------
+  // View: Adjusting Journal Entries (working paper)
+  //
+  // Journals post straight to the trial balance's current-year figures --
+  // there's no separate "unadjusted" ledger underneath. Each journal
+  // remembers exactly which account/amount lines it applied, so editing
+  // or deleting one first reverses its old effect before applying the
+  // new one (or nothing, on delete). Debit amounts are entered positive,
+  // credit amounts negative; a journal can only be saved once its lines
+  // net to zero.
+  // ------------------------------------------------------------------
+  function journalEmptyLine() { return { account_code: "", account_name: "", amount: 0 }; }
+  function journalNextNumber() {
+    const js = STATE.journals || [];
+    return js.reduce((m, j) => Math.max(m, j.number || 0), 0) + 1;
+  }
+  function journalFindOrCreateRow(accountCode, accountName) {
+    let row = accountCode ? STATE.tb_rows.find((r) => r.account_code === accountCode) : null;
+    if (!row && accountName) row = STATE.tb_rows.find((r) => r.account_name === accountName);
+    if (!row) {
+      row = { account_code: accountCode || "", account_name: accountName || "New account", line_item_code: "", debit_py: 0, credit_py: 0, debit_cy: 0, credit_cy: 0, balance_2yb: 0 };
+      STATE.tb_rows.push(row);
+    }
+    return row;
+  }
+  // sign: +1 to apply a journal's lines, -1 to reverse them.
+  function journalApplyLines(lines, sign) {
+    (lines || []).forEach((ln) => {
+      const amt = Number(ln.amount) || 0;
+      if (!amt) return;
+      const row = journalFindOrCreateRow(ln.account_code, ln.account_name);
+      const netCy = (Number(row.debit_cy) || 0) - (Number(row.credit_cy) || 0) + amt * sign;
+      row.debit_cy = netCy >= 0 ? netCy : 0;
+      row.credit_cy = netCy < 0 ? -netCy : 0;
+    });
+  }
+
+  function journalFormHtml() {
+    const total = journalDraft.lines.reduce((a, l) => a + (Number(l.amount) || 0), 0);
+    const lineRows = journalDraft.lines.map((l, i) => `
+      <tr>
+        <td class="code-col"><input type="text" data-journal-line="${i}" data-journal-line-field="account_code" value="${escapeHtml(l.account_code || "")}" /></td>
+        <td class="name-col"><input type="text" data-journal-line="${i}" data-journal-line-field="account_name" list="journal-account-names" value="${escapeHtml(l.account_name || "")}" /></td>
+        <td class="num-col"><input type="number" step="any" data-journal-line="${i}" data-journal-line-field="amount" value="${l.amount || ""}" /></td>
+        <td class="del-col"><button type="button" class="icon-btn" data-action="journal-remove-line" data-line="${i}" title="Remove line" aria-label="Remove line">&times;</button></td>
+      </tr>`).join("");
+    const accountOptions = [...new Set(STATE.tb_rows.map((r) => r.account_name).filter(Boolean))]
+      .map((n) => `<option value="${escapeHtml(n)}"></option>`).join("");
+    const balanced = Math.abs(total) < 0.5;
+
+    return `
+      <h2>${journalDraft.editingId ? "Edit Journal Entry" : "New Journal Entry"}</h2>
+      <p class="lede">Adjusting journal entries post straight to the trial balance's current-year figures, with a dated, described audit trail. Enter debit amounts positive and credit amounts negative -- the total must net to zero before the entry can be saved.</p>
+      <datalist id="journal-account-names">${accountOptions}</datalist>
+      <div class="journal-form-fields">
+        <div class="field"><label>Date</label><input type="date" data-journal-field="date" value="${escapeHtml(journalDraft.date || "")}" /></div>
+        <div class="field"><label>Reference</label><input type="text" data-journal-field="reference" placeholder="e.g. AJE1" value="${escapeHtml(journalDraft.reference || "")}" /></div>
+        <div class="field" style="flex:2 1 260px;"><label>Description</label><textarea data-journal-field="description" rows="1">${escapeHtml(journalDraft.description || "")}</textarea></div>
+      </div>
+      <div class="table-wrap">
+        <table class="tb-grid journal-lines">
+          <thead><tr><th>Number</th><th>Name</th><th class="num">Amount</th><th></th></tr></thead>
+          <tbody>${lineRows}</tbody>
+          <tfoot><tr><td colspan="2">Total</td><td class="num${balanced ? "" : " status-diff-bad"}" id="journal-total">${fmt(total)}</td><td></td></tr></tfoot>
+        </table>
+      </div>
+      <div style="display:flex; gap:8px; margin-top:12px;">
+        <button type="button" class="btn small" data-action="journal-add-line">+ Add line</button>
+        <button type="button" class="btn small primary" data-action="journal-save">Save journal</button>
+        <button type="button" class="btn small ghost" data-action="journal-cancel">Cancel</button>
+      </div>`;
+  }
+
+  function viewJournals() {
+    if (journalDraft) return journalFormHtml();
+    const js = STATE.journals || [];
+    const rows = js.length ? js.slice().sort((a, b) => (a.number || 0) - (b.number || 0)).map((j) => {
+      const total = (j.lines || []).filter((l) => Number(l.amount) > 0).reduce((a, l) => a + Number(l.amount), 0);
+      return `<tr>
+        <td>${j.number}</td>
+        <td>${j.date ? escapeHtml(fmtDate(j.date)) : ""}</td>
+        <td>${escapeHtml(j.reference || "")}</td>
+        <td>${escapeHtml(j.description || "")}</td>
+        <td class="num">${fmt(total)}</td>
+        <td><button type="button" class="btn small" data-action="journal-edit" data-journal="${j.id}">Edit</button></td>
+        <td><button type="button" class="icon-btn" data-action="journal-delete" data-journal="${j.id}" title="Delete" aria-label="Delete">&times;</button></td>
+      </tr>`;
+    }).join("") : `<tr><td colspan="7" style="text-align:center; color:var(--muted);">No adjusting journal entries yet.</td></tr>`;
+
+    return `
+      <h2>Adjusting Journal Entries</h2>
+      <p class="lede">Post adjusting entries here instead of editing the Trial Balance grid directly -- each journal keeps a dated, described audit trail and can be edited or deleted (which reverses it). Entries post straight to the current year's trial balance figures.</p>
+      <div style="margin-bottom:14px;"><button type="button" class="btn small primary" data-action="journal-new">+ New journal</button></div>
+      <div class="table-wrap">
+        <table class="tb-grid">
+          <thead><tr><th>No.</th><th>Date</th><th>Reference</th><th>Description</th><th class="num">Amount</th><th></th><th></th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  }
+
+  // ------------------------------------------------------------------
   // View: Supplementary Data (editable)
   // ------------------------------------------------------------------
   function numField(label, path, value, opts) {
@@ -2575,20 +2729,42 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
   // View: Statement of Changes in Equity
   // ------------------------------------------------------------------
   function viewSOCE() {
-    const { pyLabel, cyLabel } = years();
     const twoYb = yearsBack(STATE.entity.prior_year_end, 1);
-    const labelFor = (r, i) => {
-      if (i === 0) return "Balance at " + fmtDate(twoYb);
-      if (i === 3) return "Balance at " + fmtDate(STATE.entity.prior_year_end);
-      if (i === 6) return "Balance at " + fmtDate(STATE.entity.financial_year_end);
-      return r.label;
-    };
-    let body = `<thead><tr><th>Balance</th><th>Share capital</th><th>Reserves</th><th>Retained earnings</th><th>Total equity</th></tr></thead><tbody>`;
-    compiled.soce.rows.forEach((r, i) => {
-      const cls = r.isBalance ? "total" : "";
-      body += `<tr class="${cls}"><td>${labelFor(r, i)}</td><td class="num">${fmt(r.share_capital)}</td><td class="num">${fmt(r.reserves)}</td><td class="num">${fmt(r.retained_earnings)}</td><td class="num">${fmt(r.total)}</td></tr>`;
-    });
+    const [bal2yb, profitPy, divPy, balPy, profitCy, divCy, balCy] = compiled.soce.rows;
+
+    // Hide the Reserves column entirely when it's zero throughout -- same
+    // zero-hiding convention used on the SFP/SCI faces.
+    const showReserves = [bal2yb, balPy, balCy].some((r) => Math.abs(r.reserves) >= 0.5);
+    const retainedLabel = balCy.retained_earnings < 0 ? "Accumulated loss" : "Retained earnings";
+
+    function cellValues(vals) {
+      const arr = [vals.share_capital];
+      if (showReserves) arr.push(vals.reserves);
+      arr.push(vals.retained_earnings, vals.total);
+      return arr;
+    }
+    function tr(label, vals, cls) {
+      const tds = cellValues(vals).map((v) => `<td class="num">${fmt(v)}</td>`).join("");
+      return `<tr class="${cls || ""}"><td>${escapeHtml(label)}</td>${tds}</tr>`;
+    }
+    function periodBlock(profitRow, divRow) {
+      const zero = { share_capital: 0, reserves: 0, retained_earnings: 0, total: 0 };
+      const profitLabel = profitRow.total < 0 ? "Loss for the year" : "Profit for the year";
+      const comprehensiveLabel = profitRow.total < 0 ? "Total comprehensive loss for the year" : "Total comprehensive income for the year";
+      let html = tr(profitLabel, profitRow) + tr("Other comprehensive income", zero) + tr(comprehensiveLabel, profitRow, "total");
+      if (Math.abs(divRow.total) >= 0.5) html += tr("Dividends declared", divRow);
+      return html;
+    }
+
+    const headCols = ["Share capital"].concat(showReserves ? ["Reserves"] : [], [retainedLabel, "Total equity"]);
+    let body = `<thead><tr><th></th>${headCols.map((h) => `<th>${escapeHtml(h)}</th>`).join("")}</tr></thead><tbody>`;
+    body += tr("Balance at " + fmtDate(twoYb), bal2yb, "total");
+    body += periodBlock(profitPy, divPy);
+    body += tr("Balance at " + fmtDate(STATE.entity.prior_year_end), balPy, "total");
+    body += periodBlock(profitCy, divCy);
+    body += tr("Balance at " + fmtDate(STATE.entity.financial_year_end), balCy, "total");
     body += "</tbody>";
+
     return afsPage("soce", "Statement of Changes in Equity", `<div class="table-wrap"><table class="stmt">${body}</table></div>`);
   }
 
@@ -3086,6 +3262,7 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
     directorsresp: viewDirectorsResponsibility, directorsreport: viewDirectorsReport, practreport: viewPractitionerReport,
     sfp: viewSFP, sci: viewSCI, soce: viewSOCE, scf: viewSCF,
     policies: viewPolicies, notes: viewNotes, entity: viewEntity,
+    journals: viewJournals,
   };
 
   function renderMain() {
@@ -3096,7 +3273,77 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
     const appEl = document.querySelector(".app");
     if (appEl) appEl.classList.toggle("view-home", VIEW === "home");
   }
-  function renderAll() { renderStatusRow(); renderMain(); }
+  function renderAll() { renderStatusRow(); renderBalanceBar(); renderMain(); }
+
+  // ------------------------------------------------------------------
+  // Persistent Balance Check bar -- always visible while a client file is
+  // open (collapsible via balanceBarHidden), reusing the same tie-out
+  // checks the Status page already computes: trial balance double-entry,
+  // Statement of Financial Position balancing, Statement of Cash Flows
+  // reconciling to the trial balance's actual closing cash, and retained
+  // earnings tying through from the prior year's closing balance plus
+  // the current year's profit or loss.
+  // ------------------------------------------------------------------
+  function renderBalanceBar() {
+    const el = document.getElementById("balance-bar");
+    if (!el) return;
+    if (!compiled || VIEW === "home") { el.hidden = true; el.innerHTML = ""; return; }
+    el.hidden = false;
+
+    const { pyLabel, cyLabel } = years();
+    const tb = compiled.tbCheck, sfp = compiled.sfp, scf = compiled.scf, re = compiled.retainedEarningsCheck;
+    const checks = [
+      { label: "Trial balance balances", cy: tb.diff_cy, py: tb.diff_py, okCy: tb.balanced_cy, okPy: tb.balanced_py },
+      {
+        label: "Statement of Financial Position balances",
+        cy: sfp.total_assets.cy - sfp.total_equity_and_liabilities.cy,
+        py: sfp.total_assets.py - sfp.total_equity_and_liabilities.py,
+        okCy: sfp.balanced.cy, okPy: sfp.balanced.py,
+      },
+      {
+        label: "Statement of Cash Flows reconciles",
+        cy: scf.cy.closing_cash_computed - scf.cy.actual_closing_cash,
+        py: scf.py.closing_cash_computed - scf.py.actual_closing_cash,
+        okCy: scf.cy.reconciles, okPy: scf.py.reconciles,
+      },
+    ];
+    if (re.applicable) {
+      checks.push({
+        label: "Retained income reconciles with the prior year and net income",
+        cy: re.cy.diff, py: re.py.diff, okCy: re.cy.balanced, okPy: re.py.balanced,
+      });
+    }
+    const allOk = checks.every((c) => c.okCy && c.okPy);
+
+    if (balanceBarHidden) {
+      el.innerHTML = `<div class="balance-bar-collapsed">
+        <span class="balance-dot ${allOk ? "ok" : "bad"}"></span>
+        <span>Balance Check</span>
+        <button type="button" class="link-btn" data-action="balance-bar-show">Show</button>
+      </div>`;
+      return;
+    }
+
+    const rows = checks.map((c) => `
+      <tr>
+        <td><span class="balance-dot ${c.okCy && c.okPy ? "ok" : "bad"}"></span>${escapeHtml(c.label)}</td>
+        <td class="num">${c.okCy ? "" : fmt(c.cy)}</td>
+        <td class="num">${c.okPy ? "" : fmt(c.py)}</td>
+      </tr>`).join("");
+
+    el.innerHTML = `
+      <div class="balance-bar-head">
+        <span class="balance-dot ${allOk ? "ok" : "bad"}"></span>
+        <span class="balance-bar-title">Balance Check</span>
+        <span class="balance-bar-sub">${allOk ? "All checks balance" : "Out of balance -- see below"}</span>
+        <button type="button" class="link-btn" data-action="balance-bar-refresh">Refresh</button>
+        <button type="button" class="icon-btn" data-action="balance-bar-hide" title="Hide" aria-label="Hide">&times;</button>
+      </div>
+      <table class="balance-bar-table">
+        <thead><tr><th></th><th class="num">${cyLabel}</th><th class="num">${pyLabel}</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  }
 
   // ------------------------------------------------------------------
   // Field path get/set (dot paths into STATE, e.g. "ppe_register.Plant.additions_cy")
@@ -3235,7 +3482,7 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
       }
 
       const navBtn = e.target.closest("[data-nav]");
-      if (navBtn) { VIEW = navBtn.dataset.nav; renderStatusRow(); renderMain(); window.scrollTo({ top: 0 }); return; }
+      if (navBtn) { VIEW = navBtn.dataset.nav; renderAll(); window.scrollTo({ top: 0 }); return; }
 
       const action = e.target.closest("[data-action]");
       if (action) {
@@ -3304,18 +3551,24 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
           closeModal();
           openClient(rec.id);
           VIEW = "entity";
-          renderStatusRow(); renderMain();
+          renderAll();
           toast(`${name} added -- complete the entity details to get started`);
           return;
         }
-        if (act === "open-client") { openClient(action.dataset.client); renderStatusRow(); renderMain(); return; }
+        if (act === "open-client") { openClient(action.dataset.client); renderAll(); return; }
         if (act === "rollforward-client") {
           const rec = libraryRecord(action.dataset.client);
           if (!rec) return;
+          const oldFye = rec.data.entity.financial_year_end;
+          const nextFye = oldFye ? yearsBack(oldFye, -1) : null;
+          const confirmMsg = nextFye
+            ? `Roll "${rec.data.entity.name}" forward to the year ending ${fmtDate(nextFye)}?\n\nThis creates a new client file (rolled forward today, ${fmtDate(todayISO())}) that carries forward: the trial balance's closing balances as next year's opening figures, retained earnings, cash and cash equivalents, and the PPE/intangible asset registers. The current file is left untouched.`
+            : `Roll "${rec.data.entity.name}" forward to the next financial year?\n\nThis creates a new client file (rolled forward today, ${fmtDate(todayISO())}) that carries forward retained earnings, cash and cash equivalents, and the asset registers. The current file is left untouched.`;
+          if (!confirm(confirmMsg)) return;
           const newRec = await rollForwardClient(action.dataset.client);
           if (!newRec) return;
           openClient(newRec.id);
-          renderStatusRow(); renderMain();
+          renderAll();
           toast(`Rolled ${rec.data.entity.name} forward to year ended ${fmtDate(newRec.data.entity.financial_year_end)}`);
           return;
         }
@@ -3332,7 +3585,7 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
             STATE = deepClone(LIBRARY[0].data);
             recompute();
           }
-          renderStatusRow(); renderMain();
+          renderAll();
           toast("Client deleted");
           return;
         }
@@ -3342,6 +3595,65 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
           return;
         }
         if (act === "library-import") { document.getElementById("library-file-input").click(); return; }
+
+        if (act === "journal-new") {
+          journalDraft = { editingId: null, date: todayISO(), reference: "", description: "", lines: [journalEmptyLine(), journalEmptyLine()] };
+          renderMain();
+          return;
+        }
+        if (act === "journal-edit") {
+          const j = (STATE.journals || []).find((x) => x.id === action.dataset.journal);
+          if (!j) return;
+          journalDraft = { editingId: j.id, date: j.date, reference: j.reference, description: j.description, lines: deepClone(j.lines) };
+          renderMain();
+          return;
+        }
+        if (act === "journal-cancel") { journalDraft = null; renderMain(); return; }
+        if (act === "journal-add-line") { journalDraft.lines.push(journalEmptyLine()); renderMain(); return; }
+        if (act === "journal-remove-line") {
+          journalDraft.lines.splice(Number(action.dataset.line), 1);
+          renderMain();
+          return;
+        }
+        if (act === "journal-save") {
+          const cleanLines = journalDraft.lines.filter((l) => (l.account_name || l.account_code) && Number(l.amount));
+          const total = cleanLines.reduce((a, l) => a + (Number(l.amount) || 0), 0);
+          if (!cleanLines.length) { toast("Add at least one line"); return; }
+          if (Math.abs(total) >= 0.5) { toast(`Journal must net to zero before it can be saved (currently ${fmt(total)})`); return; }
+          STATE.journals = STATE.journals || [];
+          if (journalDraft.editingId) {
+            const existing = STATE.journals.find((j) => j.id === journalDraft.editingId);
+            if (existing) journalApplyLines(existing.lines, -1);
+            journalApplyLines(cleanLines, 1);
+            if (existing) Object.assign(existing, { date: journalDraft.date, reference: journalDraft.reference, description: journalDraft.description, lines: cleanLines });
+          } else {
+            journalApplyLines(cleanLines, 1);
+            STATE.journals.push({
+              id: "j" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+              number: journalNextNumber(),
+              date: journalDraft.date, reference: journalDraft.reference, description: journalDraft.description,
+              lines: cleanLines,
+            });
+          }
+          journalDraft = null;
+          recompute(); renderAll();
+          toast("Journal saved");
+          return;
+        }
+        if (act === "journal-delete") {
+          const j = (STATE.journals || []).find((x) => x.id === action.dataset.journal);
+          if (!j) return;
+          if (!confirm(`Delete journal ${j.number}? This reverses its effect on the trial balance.`)) return;
+          journalApplyLines(j.lines, -1);
+          STATE.journals = STATE.journals.filter((x) => x.id !== j.id);
+          recompute(); renderAll();
+          toast("Journal deleted");
+          return;
+        }
+
+        if (act === "balance-bar-hide") { balanceBarHidden = true; renderBalanceBar(); return; }
+        if (act === "balance-bar-show") { balanceBarHidden = false; renderBalanceBar(); return; }
+        if (act === "balance-bar-refresh") { recompute(); renderAll(); toast("Balance check refreshed"); return; }
       }
 
       if (e.target.id === "modal-backdrop") closeModal();
@@ -3366,7 +3678,7 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
         const adjEl = row.querySelector("[data-tb-adj]");
         if (adjEl) adjEl.value = (netCy - netPy) || "";
         recompute();
-        renderStatusRow();
+        renderStatusRow(); renderBalanceBar();
         document.getElementById("tb-footer").innerHTML = tbFooterRowHtml();
         return;
       }
@@ -3379,7 +3691,7 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
         const finalEl = row.querySelector('[data-tb-net="cy"]');
         if (finalEl) finalEl.value = newFinal || "";
         recompute();
-        renderStatusRow();
+        renderStatusRow(); renderBalanceBar();
         document.getElementById("tb-footer").innerHTML = tbFooterRowHtml();
         return;
       }
@@ -3393,7 +3705,7 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
         const val = parseNum(t.value);
         setPath(STATE.supplementary, t.dataset.suppField, val);
         recompute();
-        renderStatusRow();
+        renderStatusRow(); renderBalanceBar();
         return;
       }
       if (t.dataset.entityField) {
@@ -3401,7 +3713,7 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
         const val = t.type === "number" ? parseNum(t.value) : t.value;
         STATE.entity[path] = val;
         recompute();
-        renderStatusRow();
+        renderStatusRow(); renderBalanceBar();
         return;
       }
       if (t.dataset.directorField) {
@@ -3410,7 +3722,27 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
         if (STATE.entity.directors[idx]) {
           STATE.entity.directors[idx][field] = t.value;
           recompute();
-          renderStatusRow();
+          renderStatusRow(); renderBalanceBar();
+        }
+        return;
+      }
+      if (t.dataset.journalField && journalDraft) {
+        journalDraft[t.dataset.journalField] = t.value;
+        return;
+      }
+      if (t.dataset.journalLine !== undefined && journalDraft) {
+        const idx = Number(t.dataset.journalLine);
+        const field = t.dataset.journalLineField;
+        const line = journalDraft.lines[idx];
+        if (!line) return;
+        line[field] = field === "amount" ? parseNum(t.value) : t.value;
+        if (field === "amount") {
+          const total = journalDraft.lines.reduce((a, l) => a + (Number(l.amount) || 0), 0);
+          const totalEl = document.getElementById("journal-total");
+          if (totalEl) {
+            totalEl.textContent = fmt(total);
+            totalEl.classList.toggle("status-diff-bad", Math.abs(total) >= 0.5);
+          }
         }
         return;
       }
@@ -3472,7 +3804,7 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
             } catch (err) { /* skip this record, keep going */ }
           }
           if (!libraryRecord(CURRENT_ID) && LIBRARY.length) { setCurrentId(LIBRARY[0].id); STATE = deepClone(LIBRARY[0].data); recompute(); }
-          renderStatusRow(); renderMain();
+          renderAll();
           toast(importedCount === imported.length
             ? `Imported ${importedCount} client file(s)`
             : `Imported ${importedCount} of ${imported.length} client file(s) -- some failed`);
