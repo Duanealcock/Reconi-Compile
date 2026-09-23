@@ -3532,6 +3532,22 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
     const finalTotal = t.debit_cy - t.credit_cy;
     const adjTotal = finalTotal - openingTotal;
     const prior2Total = STATE.tb_rows.reduce((a, r) => a + (Number(r.balance_2yb) || 0), 0);
+    // For an Individual client there's no Capital/Retained Earnings account
+    // on the Trial Balance at all (opening capital is a typed field on its
+    // own, not a TB row) -- so this Total, unlike a Company's, will never
+    // net to zero. By the accounting identity (Assets + Expenses + Drawings)
+    // - (Liabilities + Income) always equals Opening Capital, so what shows
+    // up here is that client's opening capital for each column, not an
+    // out-of-balance error. Showing it under "Opening Balance / Adjustments
+    // / Final" headers designed for a Company's debit=zero-credit check
+    // reads as a red flag when it isn't one, so Individual clients get an
+    // explanatory note here instead -- the real balance check for this
+    // client type is the Balansstaat's own Bates = Ekwiteit & Laste tie-out.
+    if (isIndividual()) {
+      return `<td colspan="9" class="muted" style="text-align:left; padding:10px 8px; font-style:italic;">
+        This total is not a balance check for an Individual client -- there is no separate Capital account on the Trial Balance, so it always equals the client's Opening Capital (currently ${fmt(openingTotal)} / ${fmt(finalTotal)}) rather than zero. See the Balansstaat page (Bates = Ekwiteit &amp; Laste) for the actual balance check.
+      </td>`;
+    }
     return `<td colspan="3">Total</td>
       <td class="num">${fmt(openingTotal)}</td>
       <td class="num">${fmt(adjTotal)}</td>
