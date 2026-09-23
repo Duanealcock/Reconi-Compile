@@ -1831,6 +1831,40 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
     { code: "IND_DIVIDENDE", label: "Dividende ontvang", statement: "INK", section: "Beleggingsinkomste", nature: "credit" },
     { code: "IND_KAPITAALWINS", label: "Kapitaalwins", statement: "INK", section: "Beleggingsinkomste", nature: "credit" },
   ];
+  // Optional starting point for a new Individual client whose activity is
+  // farming ("Boerdery"): a zeroed set of the GL accounts a farming sole
+  // proprietor's Modified Cash Basis AFS typically needs (land, livestock,
+  // farming income by product, a lumped farming-expense line, investment
+  // income), each pre-mapped to its Individual line item code so the
+  // accountant only has to type in balances rather than also build the
+  // account list and map every row from scratch. Purely a convenience
+  // default for account_code/account_name/line_item_code -- every row is
+  // still a completely ordinary, editable/deletable TB row afterwards, and
+  // a client can just as well start blank (the "Blank" template option)
+  // and add rows one at a time the normal way.
+  const FARMING_INDIVIDUAL_TB_TEMPLATE = [
+    { account_code: "NCA-001", account_name: "Plaasgrond", line_item_code: "IND_NCA", debit_py: 0, credit_py: 0, debit_cy: 0, credit_cy: 0 },
+    { account_code: "NCA-002", account_name: "Geboue en verbeterings", line_item_code: "IND_NCA", debit_py: 0, credit_py: 0, debit_cy: 0, credit_cy: 0 },
+    { account_code: "NCA-003", account_name: "Voertuie", line_item_code: "IND_NCA", debit_py: 0, credit_py: 0, debit_cy: 0, credit_cy: 0 },
+    { account_code: "NCA-004", account_name: "Toerusting en masjinerie", line_item_code: "IND_NCA", debit_py: 0, credit_py: 0, debit_cy: 0, credit_cy: 0 },
+    { account_code: "NCA-005", account_name: "Beleggings", line_item_code: "IND_NCA", debit_py: 0, credit_py: 0, debit_cy: 0, credit_cy: 0 },
+    { account_code: "CA-001", account_name: "Bank", line_item_code: "IND_CA", debit_py: 0, credit_py: 0, debit_cy: 0, credit_cy: 0 },
+    { account_code: "CA-002", account_name: "BTW", line_item_code: "IND_CA", debit_py: 0, credit_py: 0, debit_cy: 0, credit_cy: 0 },
+    { account_code: "CA-003", account_name: "Lewende hawe", line_item_code: "IND_CA", debit_py: 0, credit_py: 0, debit_cy: 0, credit_cy: 0 },
+    { account_code: "DR-001", account_name: "Onttrekkings", line_item_code: "IND_DRAWINGS", debit_py: 0, credit_py: 0, debit_cy: 0, credit_cy: 0 },
+    { account_code: "NCL-001", account_name: "Lening", line_item_code: "IND_NCL", debit_py: 0, credit_py: 0, debit_cy: 0, credit_cy: 0 },
+    { account_code: "CL-001", account_name: "Krediteure", line_item_code: "IND_CL", debit_py: 0, credit_py: 0, debit_cy: 0, credit_cy: 0 },
+    { account_code: "INK-001", account_name: "Verkope - Vee", line_item_code: "IND_INKOMSTE", debit_py: 0, credit_py: 0, debit_cy: 0, credit_cy: 0 },
+    { account_code: "INK-002", account_name: "Verkope - Wol", line_item_code: "IND_INKOMSTE", debit_py: 0, credit_py: 0, debit_cy: 0, credit_cy: 0 },
+    { account_code: "INK-003", account_name: "Verkope - Gewasse", line_item_code: "IND_INKOMSTE", debit_py: 0, credit_py: 0, debit_cy: 0, credit_cy: 0 },
+    { account_code: "INK-004", account_name: "Subsidies en toelaes ontvang", line_item_code: "IND_INKOMSTE", debit_py: 0, credit_py: 0, debit_cy: 0, credit_cy: 0 },
+    { account_code: "INK-005", account_name: "Diverse inkomste", line_item_code: "IND_INKOMSTE", debit_py: 0, credit_py: 0, debit_cy: 0, credit_cy: 0 },
+    { account_code: "STK-001", account_name: "Voorraatverandering - Lewende hawe", line_item_code: "IND_STOCK_MOVEMENT", debit_py: 0, credit_py: 0, debit_cy: 0, credit_cy: 0 },
+    { account_code: "UIT-001", account_name: "Boerdery-uitgawes", line_item_code: "IND_UITGAWES", debit_py: 0, credit_py: 0, debit_cy: 0, credit_cy: 0 },
+    { account_code: "RNT-001", account_name: "Rente ontvang", line_item_code: "IND_RENTE", debit_py: 0, credit_py: 0, debit_cy: 0, credit_cy: 0 },
+    { account_code: "DIV-001", account_name: "Dividende ontvang", line_item_code: "IND_DIVIDENDE", debit_py: 0, credit_py: 0, debit_cy: 0, credit_cy: 0 },
+    { account_code: "CGT-001", account_name: "Kapitaalwins", line_item_code: "IND_KAPITAALWINS", debit_py: 0, credit_py: 0, debit_cy: 0, credit_cy: 0 },
+  ];
   function blankSupplementaryIndividual() {
     return {
       individual: { opening_capital_py: 0, opening_capital_cy: 0 },
@@ -2369,7 +2403,7 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
       ? {
           entity: blankEntityIndividual(fields),
           line_items: deepClone(INDIVIDUAL_LINE_ITEMS),
-          tb_rows: [],
+          tb_rows: fields.template === "farming" ? deepClone(FARMING_INDIVIDUAL_TB_TEMPLATE) : [],
           supplementary: blankSupplementaryIndividual(),
           page_settings: blankPageSettings(),
           management: blankManagementSeeded(fields.financial_year_end),
@@ -3169,6 +3203,13 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
           <div class="field"><label>Currency</label><input type="text" id="new-client-ind-currency" value="ZAR" /></div>
         </div>
         <div class="field" style="margin-top:14px;"><label>Nature of activities</label><input type="text" id="new-client-ind-nature" placeholder="e.g. Boerdery" /></div>
+        <div class="field" style="margin-top:14px;">
+          <label>Starting template</label>
+          <select id="new-client-ind-template">
+            <option value="blank">Blank -- add Trial Balance accounts one at a time</option>
+            <option value="farming">Boerdery (Farming) -- pre-loaded with typical farming accounts (land, livestock, farming income/expenses, investment income), all at nil</option>
+          </select>
+        </div>
       </div>`;
   }
 
@@ -7357,6 +7398,8 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
             const name = document.getElementById("new-client-ind-name").value.trim();
             const fye = document.getElementById("new-client-ind-fye").value;
             if (!name) { toast("Enter the client's name"); return; }
+            const templateEl = document.getElementById("new-client-ind-template");
+            const template = templateEl ? templateEl.value : "blank";
             const rec = await createClient({
               client_type: "individual",
               name,
@@ -7367,13 +7410,16 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
               currency: document.getElementById("new-client-ind-currency").value.trim() || "ZAR",
               currency_symbol: "R",
               nature_of_business: document.getElementById("new-client-ind-nature").value.trim(),
+              template,
             });
             if (!rec) return;
             closeModal();
             openClient(rec.id);
             VIEW = "infostore";
             renderAll();
-            toast(`${name} added -- complete the entity details to get started`);
+            toast(template === "farming"
+              ? `${name} added with the Boerdery template -- Trial Balance accounts are pre-loaded at nil, ready for balances`
+              : `${name} added -- complete the entity details to get started`);
             return;
           }
           const name = document.getElementById("new-client-name").value.trim();
