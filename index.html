@@ -895,6 +895,7 @@ table.balance-bar-table td:first-child { display: flex; align-items: center; gap
 <div class="toast no-print" id="toast"></div>
 <input type="file" id="csv-file-input" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" style="display:none" />
 <input type="file" id="library-file-input" accept=".json,application/json" style="display:none" />
+<input type="file" id="bulk-clients-file-input" accept=".xlsx,.xls,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" style="display:none" />
 <input type="file" id="entity-logo-input" accept="image/*" style="display:none" />
 <input type="file" id="ledgerly-file-input" accept=".json,application/json" style="display:none" />
 <input type="file" id="mgmt-opening-file-input" accept=".json,application/json" style="display:none" />
@@ -1737,6 +1738,8 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
       reporting_framework: "International Financial Reporting Standard for Small and Medium-sized Entities (IFRS for SMEs)",
       nature_of_business: fields.nature_of_business || "",
       directors: [],
+      shareholders: fields.shareholders || "",
+      compliance_notes: fields.compliance_notes || "",
       tax_rate: 0.27,
       registered_address: "",
       business_address: "",
@@ -2416,6 +2419,18 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
           page_settings: blankPageSettings(),
           management: blankManagementSeeded(fields.financial_year_end),
         };
+    // Bulk import (see bulk-import-clients) passes a plain array of director
+    // names for a company client -- fold them into the entity's directors
+    // table here (one row each, every other director field left blank for
+    // the user to fill in on the Info Store) rather than teaching
+    // blankEntity() about it, since the interactive "Add client" form never
+    // populates directors at creation time.
+    if (fields.client_type !== "individual" && Array.isArray(fields.directors) && fields.directors.length) {
+      data.entity.directors = fields.directors
+        .map((d) => (typeof d === "string" ? d.trim() : (d && d.name) || ""))
+        .filter(Boolean)
+        .map((name) => ({ name, id_number: "", designation: "", nationality: "", appointment_date: "", resignation_date: "" }));
+    }
     const { data: row, error } = await sb
       .from("clients")
       .insert({ firm_id: FIRM.id, name: data.entity.name, data })
@@ -2894,6 +2909,7 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
         `<button class="btn small primary" data-action="add-client">+ Add client</button>`,
         `<button class="btn small" data-action="library-export">Export library (JSON)</button>`,
         `<button class="btn small" data-action="library-import">Import library (JSON)</button>`,
+        `<button class="btn small" data-action="bulk-import-clients">Bulk import clients (CSV/Excel)</button>`,
       ].join("");
       return;
     }
@@ -6956,6 +6972,8 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
       <div class="field" style="margin-top:14px;"><label>Reporting framework</label><input type="text" data-entity-field="reporting_framework" value="${escapeHtml(e.reporting_framework)}" /></div>
       <div class="field" style="margin-top:14px;"><label>Registered address</label><input type="text" data-entity-field="registered_address" value="${escapeHtml(e.registered_address || "")}" /></div>
       <div class="field" style="margin-top:14px;"><label>Business address</label><input type="text" data-entity-field="business_address" value="${escapeHtml(e.business_address || "")}" /></div>
+      <div class="field" style="margin-top:14px;"><label>Shareholders / ownership</label><input type="text" data-entity-field="shareholders" value="${escapeHtml(e.shareholders || "")}" placeholder="e.g. Holdco - 75%; J Smith - 25%" /></div>
+      <div class="field" style="margin-top:14px;"><label>Compliance notes</label><input type="text" data-entity-field="compliance_notes" value="${escapeHtml(e.compliance_notes || "")}" placeholder="e.g. Beneficial Ownership / Annual Return filing status" /></div>
       <div class="field" style="margin-top:14px;">
         <label>Entity logo</label>
         <div style="display:flex;align-items:center;gap:12px;">
@@ -7498,6 +7516,7 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
           return;
         }
         if (act === "library-import") { document.getElementById("library-file-input").click(); return; }
+        if (act === "bulk-import-clients") { document.getElementById("bulk-clients-file-input").click(); return; }
 
         if (act === "journal-new") {
           journalDraft = { editingId: null, date: todayISO(), reference: "", description: "", lines: [journalEmptyLine(), journalEmptyLine()] };
@@ -7912,6 +7931,76 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
             : `Imported ${importedCount} of ${imported.length} client file(s) -- some failed`);
         };
         reader.readAsText(t.files[0]);
+        t.value = "";
+        return;
+      }
+      if (t.id === "bulk-clients-file-input" && t.files && t.files[0]) {
+        const reader = new FileReader();
+        reader.onload = async () => {
+          let bookRows;
+          try {
+            const workbook = XLSX.read(new Uint8Array(reader.result), { type: "array" });
+            const sheet = workbook.Sheets[workbook.SheetNames[0]];
+            bookRows = XLSX.utils.sheet_to_json(sheet, { defval: "", raw: false });
+          } catch (err) {
+            toast("Couldn't read that file -- is it a valid CSV or Excel file?");
+            return;
+          }
+          if (!bookRows.length) { toast("No rows found on the first sheet of that file"); return; }
+          // Column names are matched loosely (case/space/punctuation-insensitive)
+          // against this synonym table, so the bulk-import template's exact
+          // header wording isn't the only thing that works.
+          const FIELD_SYNONYMS = {
+            name: ["clientname", "companyname", "name", "entityname"],
+            registration_number: ["registrationnumber", "regnumber", "regno", "enterpriseno", "enterprisenumber", "companyregno"],
+            company_type: ["companytype", "entitytype", "type"],
+            financial_year_end: ["financialyearend", "yearend", "fye"],
+            currency: ["currency"],
+            currency_symbol: ["currencysymbol", "symbol"],
+            nature_of_business: ["natureofbusiness", "business", "activities"],
+            directors: ["directors", "director"],
+            shareholders: ["shareholders", "shareholder", "ownership"],
+            compliance_notes: ["compliancenotes", "notes", "boreg2026", "arreg2026", "boreg", "arreg"],
+          };
+          const normalizeKey = (k) => String(k || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+          const LOOKUP = {};
+          Object.keys(FIELD_SYNONYMS).forEach((canon) => { FIELD_SYNONYMS[canon].forEach((syn) => { LOOKUP[syn] = canon; }); });
+          const parsedRows = bookRows.map((raw) => {
+            const row = {};
+            for (const k of Object.keys(raw)) {
+              const canon = LOOKUP[normalizeKey(k)];
+              if (canon && String(raw[k]).trim()) row[canon] = String(raw[k]).trim();
+            }
+            return row;
+          }).filter((row) => row.name);
+          if (!parsedRows.length) {
+            toast("No usable rows found -- make sure there's a Client Name column with at least one name filled in");
+            return;
+          }
+          if (!confirm(`Import ${parsedRows.length} client(s) as new company clients? Each will be created with the Trial Balance left blank, ready for you to complete.`)) return;
+          let importedCount = 0;
+          for (const row of parsedRows) {
+            const rec = await createClient({
+              client_type: "company",
+              name: row.name,
+              registration_number: row.registration_number || "",
+              company_type: row.company_type || undefined,
+              financial_year_end: row.financial_year_end || "",
+              currency: row.currency || "ZAR",
+              currency_symbol: row.currency_symbol || "R",
+              nature_of_business: row.nature_of_business || "",
+              shareholders: row.shareholders || "",
+              compliance_notes: row.compliance_notes || "",
+              directors: row.directors ? row.directors.split(";").map((s) => s.trim()).filter(Boolean) : [],
+            });
+            if (rec) importedCount++;
+          }
+          renderAll();
+          toast(importedCount === parsedRows.length
+            ? `Imported ${importedCount} client(s)`
+            : `Imported ${importedCount} of ${parsedRows.length} client(s) -- some failed, see the earlier toasts`);
+        };
+        reader.readAsArrayBuffer(t.files[0]);
         t.value = "";
         return;
       }
