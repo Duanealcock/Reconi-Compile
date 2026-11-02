@@ -385,12 +385,20 @@ table.tb-grid td.del-col { width: 34px; text-align: center; background: #F4F5F8;
 }
 .icon-btn:hover { background: var(--danger-bg); color: var(--danger); }
 
-.tb-footer-row td {
-  font-weight: 700; padding: 7px 8px; background: #F4F5F8;
+/* table.tb-grid td { padding: 0; ... } (below) is more specific than a
+   bare .tb-footer-row td rule (2 element selectors beat 1), so it was
+   silently winning and zeroing out this row's padding -- the Total/Profit
+   footer rows rendered ~7px shorter than the data rows above them, which
+   is what reads as "not aligned". Prefixing table.tb-grid here matches
+   that specificity and actually wins, verified against the data rows'
+   own ~28px height with the trial balance/management accounts/journal
+   grids this class is shared across. */
+table.tb-grid .tb-footer-row td {
+  font-weight: 700; padding: 4px 8px; background: #F4F5F8;
   border-top: 1px solid #DBDEE5; border-bottom: 1px solid #DBDEE5; border-right: 1px solid #DBDEE5;
   position: sticky; bottom: 0; z-index: 3; box-shadow: 0 -1px 0 #CDD2DC;
 }
-.tb-footer-row td:first-child { border-left: 1px solid #DBDEE5; }
+table.tb-grid .tb-footer-row td:first-child { border-left: 1px solid #DBDEE5; }
 
 /* Supplementary data forms */
 .field-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px 16px; }
@@ -1272,6 +1280,20 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
     if (rounded === 0) return "-";
     const neg = rounded < 0;
     const s = Math.abs(rounded).toLocaleString("en-US");
+    return neg ? `(${s})` : s;
+  }
+  // Same convention as fmt() (thousands separator, negatives in
+  // parentheses, zero as "-") but keeps 2 decimal places instead of
+  // rounding to whole currency units -- used only on the Trial Balance
+  // screen's own grid/footer, which works in cents; the compiled AFS pages
+  // keep using fmt() and stay rounded to whole Rand, as issued statements
+  // conventionally are.
+  function fmtTb(n) {
+    if (n === null || n === undefined || isNaN(n)) return "";
+    const rounded = Math.round(n * 100) / 100;
+    if (rounded === 0) return "-";
+    const neg = rounded < 0;
+    const s = Math.abs(rounded).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     return neg ? `(${s})` : s;
   }
   function parseNum(v) {
@@ -2339,6 +2361,11 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
           justification: "Left",
         },
         header_footer: { space_before_first_line: "0.25 cm" },
+        // Notes manually marked "not applicable" for this client, keyed by
+        // NOTE_ORDER code (e.g. { PPE: true }) -- excluded from the
+        // compiled Notes page and skipped when renumbering, regardless of
+        // whether they'd otherwise have data. See refreshNoteNumbers().
+        excluded: {},
       },
     };
   }
@@ -2350,6 +2377,12 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
   function deepMergeDefaults(value, defaults) {
     if (!defaults || typeof defaults !== "object" || Array.isArray(defaults)) {
       return value !== undefined ? value : defaults;
+    }
+    // An empty-object default (e.g. notes.excluded, a free-form map with
+    // no fixed keys) marks a field with no fixed shape -- keep whatever's
+    // already there instead of wiping it back to {} on every recompute.
+    if (Object.keys(defaults).length === 0) {
+      return value !== undefined ? value : {};
     }
     const out = {};
     Object.keys(defaults).forEach((k) => { out[k] = deepMergeDefaults(value ? value[k] : undefined, defaults[k]); });
@@ -2732,11 +2765,19 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
     const n = compiled && compiled.notes[key];
     return !!n && (n.py.length > 0 || n.cy.length > 0);
   }
+  // Notes marked "not applicable" on this client -- see blankPageSettings()
+  // notes.excluded. Defensive fallback for any record read before that
+  // field existed and hasn't gone through ensurePageSettings() yet.
+  function isNoteExcluded(key) {
+    const excluded = STATE.page_settings && STATE.page_settings.notes && STATE.page_settings.notes.excluded;
+    return !!(excluded && excluded[key]);
+  }
   let NOTE_NUM = {};
   function refreshNoteNumbers() {
     NOTE_NUM = {};
     let n = 1;
     NOTE_ORDER.forEach((k) => {
+      if (isNoteExcluded(k)) return;
       if (CONDITIONAL_NOTE_KEYS.has(k) && !hasNoteData(k)) return;
       NOTE_NUM[k] = n++;
     });
@@ -3598,16 +3639,16 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
     // client type is the Balansstaat's own Bates = Ekwiteit & Laste tie-out.
     if (isIndividual()) {
       return `<td colspan="10" class="muted" style="text-align:left; padding:10px 8px; font-style:italic;">
-        This total is not a balance check for an Individual client -- there is no separate Capital account on the Trial Balance, so it always equals the client's Opening Capital (currently ${fmt(openingTotal)} / ${fmt(finalTotal)}) rather than zero. See the Balansstaat page (Bates = Ekwiteit &amp; Laste) for the actual balance check.
+        This total is not a balance check for an Individual client -- there is no separate Capital account on the Trial Balance, so it always equals the client's Opening Capital (currently ${fmtTb(openingTotal)} / ${fmtTb(finalTotal)}) rather than zero. See the Balansstaat page (Bates = Ekwiteit &amp; Laste) for the actual balance check.
       </td>`;
     }
     return `<td colspan="3">Total</td>
-      <td class="num">${fmt(openingTotal)}</td>
-      <td class="num">${fmt(tbTotal)}</td>
-      <td class="num">${fmt(adjTotal)}</td>
-      <td class="num">${fmt(finalTotal)}</td>
-      <td class="num">${fmt(openingTotal)}</td>
-      <td class="num">${fmt(prior2Total)}</td>
+      <td class="num">${fmtTb(openingTotal)}</td>
+      <td class="num">${fmtTb(tbTotal)}</td>
+      <td class="num">${fmtTb(adjTotal)}</td>
+      <td class="num">${fmtTb(finalTotal)}</td>
+      <td class="num">${fmtTb(openingTotal)}</td>
+      <td class="num">${fmtTb(prior2Total)}</td>
       <td></td>`;
   }
 
@@ -3634,12 +3675,12 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
     const adjPL = finalPL - tbPL;
     const prior2PL = -sumRaw((r) => Number(r.balance_2yb) || 0);
     return `<td colspan="3">Profit / (loss)</td>
-      <td class="num">${fmt(openingPL)}</td>
-      <td class="num">${fmt(tbPL)}</td>
-      <td class="num">${fmt(adjPL)}</td>
-      <td class="num">${fmt(finalPL)}</td>
-      <td class="num">${fmt(openingPL)}</td>
-      <td class="num">${fmt(prior2PL)}</td>
+      <td class="num">${fmtTb(openingPL)}</td>
+      <td class="num">${fmtTb(tbPL)}</td>
+      <td class="num">${fmtTb(adjPL)}</td>
+      <td class="num">${fmtTb(finalPL)}</td>
+      <td class="num">${fmtTb(openingPL)}</td>
+      <td class="num">${fmtTb(prior2PL)}</td>
       <td></td>`;
   }
   function refreshTbFooter() {
@@ -6003,18 +6044,23 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
   function notesIntroStyle() { return afsTextStyle(STATE.page_settings.notes.body_subheading); }
 
   function noteBlock(key, intro) {
+    if (NOTE_NUM[key] === undefined) return "";
     return `<div class="note-block"><h4 style="${notesH4Style()}">${NOTE_NUM[key]}. ${NOTE_TITLES[key]}</h4>
       ${intro ? `<p class="intro" style="${notesIntroStyle()}">${intro}</p>` : ""}
       ${statementTable(breakdownRows(key), { showNote: false, pageKey: "notes" })}</div>`;
   }
 
   // Non-current-asset template categories only appear once something is
-  // actually mapped to them -- see CONDITIONAL_NOTE_KEYS / refreshNoteNumbers.
+  // actually mapped to them, and any note marked "not applicable" is
+  // skipped regardless -- both are folded into NOTE_NUM by
+  // refreshNoteNumbers(), which noteBlock() itself already checks, so this
+  // is just a clearer name at call sites for the conditional ones.
   function maybeNoteBlock(key, intro) {
-    return hasNoteData(key) ? noteBlock(key, intro) : "";
+    return noteBlock(key, intro);
   }
 
   function ppeNoteBlock() {
+    if (NOTE_NUM.PPE === undefined) return "";
     const reg = STATE.supplementary.ppe_register;
     const { pyLabel, cyLabel } = years();
     const ns = STATE.page_settings.notes;
@@ -6039,6 +6085,7 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
   }
 
   function intangiblesNoteBlock() {
+    if (NOTE_NUM.INTANGIBLES === undefined) return "";
     const r = STATE.supplementary.intangibles_register;
     const rows = [
       { label: "Cost", py: r.closing_cost_py, cy: r.closing_cost_cy },
@@ -6052,6 +6099,7 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
   }
 
   function borrowingsNoteBlock() {
+    if (NOTE_NUM.BORROWINGS === undefined) return "";
     const s = compiled.sfp.sections;
     const ncl = s["Non-current liabilities"].rows.find((r) => r.code === "NCL_BORROWINGS");
     const cll = s["Current liabilities"].rows.find((r) => r.code === "CL_STBORROWINGS");
@@ -6066,6 +6114,7 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
   }
 
   function taxNoteBlock() {
+    if (NOTE_NUM.TAX === undefined) return "";
     const py = compiled.sci.py, cy = compiled.sci.cy;
     const rate = STATE.entity.tax_rate;
     const taxAtRatePy = roundHalfEven(py.profit_before_tax * rate), taxAtRateCy = roundHalfEven(cy.profit_before_tax * rate);
@@ -6082,6 +6131,7 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
   }
 
   function operatingProfitNoteBlock() {
+    if (NOTE_NUM.OPERATINGPROFIT === undefined) return "";
     const py = compiled.sci.py, cy = compiled.sci.cy;
     function rowsFor(key) {
       const p = compiled.notes[key].py, c = compiled.notes[key].cy;
@@ -6102,6 +6152,7 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
   }
 
   function financeNoteBlock() {
+    if (NOTE_NUM.FINANCE === undefined) return "";
     const py = compiled.sci.py, cy = compiled.sci.cy;
     const rows = [
       { label: "Finance income", bold: true },
@@ -6963,9 +7014,36 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
     return afsPage("policies", "Accounting Policies", `<div style="${wrapStyle}">${policiesHtml}</div>`);
   }
 
+  // On-screen only (.no-print) -- one row per note, in print order, with a
+  // checkbox to mark it not applicable to this client. A note already
+  // hidden because nothing's mapped to it (a CONDITIONAL_NOTE_KEYS entry
+  // with no data) shows as a disabled, greyed row instead of an active
+  // checkbox, since there's nothing to toggle on top of that.
+  function noteToggleRowHtml(key) {
+    const excluded = isNoteExcluded(key);
+    const autoHidden = !excluded && CONDITIONAL_NOTE_KEYS.has(key) && !hasNoteData(key);
+    const label = escapeHtml(NOTE_TITLES[key]);
+    if (autoHidden) {
+      return `<label style="display:flex; align-items:center; gap:6px; font-size:12px; color:#9AA3B2;">
+        <input type="checkbox" disabled /> ${label} <span style="font-style:italic;">(hidden -- no data)</span>
+      </label>`;
+    }
+    return `<label style="display:flex; align-items:center; gap:6px; font-size:12px;">
+      <input type="checkbox" data-page-setting-bool="notes.excluded.${key}" ${excluded ? "checked" : ""} /> ${label}${excluded ? ` <span style="font-style:italic;">(not applicable)</span>` : ""}
+    </label>`;
+  }
+  function noteTogglePanelHtml() {
+    return `<div class="card no-print" style="margin-bottom:14px; padding:14px 16px;">
+      <strong>Notes to include</strong>
+      <p class="muted" style="margin:4px 0 10px; font-size:12px;">Tick a note as "not applicable" to leave it out of this client's Notes page -- it stops printing and the rest renumber automatically. This panel itself never prints.</p>
+      <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(260px,1fr)); gap:6px 16px;">
+        ${NOTE_ORDER.map(noteToggleRowHtml).join("")}
+      </div>
+    </div>`;
+  }
   function viewNotes() {
     const notesWrapStyle = afsJustificationIndentStyle(STATE.page_settings.notes.justification_indent);
-    return afsPage("notes", "Notes to the Annual Financial Statements", `<div style="${notesWrapStyle}">
+    return noteTogglePanelHtml() + afsPage("notes", "Notes to the Annual Financial Statements", `<div style="${notesWrapStyle}">
         ${ppeNoteBlock()}
         ${maybeNoteBlock("INVPROPFV")}
         ${maybeNoteBlock("INVPROPCOST")}
