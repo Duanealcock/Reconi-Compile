@@ -3611,6 +3611,44 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
       <td></td>`;
   }
 
+  // Profit/(loss) for each column -- the same figure the compiled
+  // Statement of Comprehensive Income shows, but broken out per column
+  // here (Opening Balance, Trial balance, ADJ, Final, ...) so it's visible
+  // right on the Trial Balance without switching pages, and so the effect
+  // of posting an adjustment on profit is visible immediately. Only income
+  // statement line items count (section/statement = SCI for a Company,
+  // INK for an Individual) -- summing their raw debit-minus-credit figures
+  // and negating gives profit (credit-nature income rows are already
+  // negative in that convention, expense rows positive, so the TB grid's
+  // own numbers are all that's needed; no nature-sign lookup required).
+  function tbProfitRowHtml() {
+    if (isIndividual()) return "";
+    const liByCode = {};
+    STATE.line_items.forEach((li) => { liByCode[li.code] = li; });
+    const isIncomeRow = (r) => { const li = liByCode[r.line_item_code]; return !!li && li.statement === "SCI"; };
+    const incomeRows = STATE.tb_rows.filter(isIncomeRow);
+    const sumRaw = (keyFn) => incomeRows.reduce((a, r) => a + keyFn(r), 0);
+    const openingPL = -sumRaw((r) => (Number(r.debit_py) || 0) - (Number(r.credit_py) || 0));
+    const tbPL = -sumRaw((r) => netTbOf(r));
+    const finalPL = -sumRaw((r) => (Number(r.debit_cy) || 0) - (Number(r.credit_cy) || 0));
+    const adjPL = finalPL - tbPL;
+    const prior2PL = -sumRaw((r) => Number(r.balance_2yb) || 0);
+    return `<td colspan="3">Profit / (loss)</td>
+      <td class="num">${fmt(openingPL)}</td>
+      <td class="num">${fmt(tbPL)}</td>
+      <td class="num">${fmt(adjPL)}</td>
+      <td class="num">${fmt(finalPL)}</td>
+      <td class="num">${fmt(openingPL)}</td>
+      <td class="num">${fmt(prior2PL)}</td>
+      <td></td>`;
+  }
+  function refreshTbFooter() {
+    const totalEl = document.getElementById("tb-footer");
+    if (totalEl) totalEl.innerHTML = tbFooterRowHtml();
+    const plEl = document.getElementById("tb-footer-pl");
+    if (plEl) plEl.innerHTML = tbProfitRowHtml();
+  }
+
   function viewTB() {
     const { pyLabel, cyLabel } = years();
     const prior2Label = String(Number(pyLabel) - 1);
@@ -3662,7 +3700,10 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
             <th class="num">Prior Year ${pyLabel}${resizeHandle("tb-col-6")}</th><th class="num">Prior Year ${prior2Label}${resizeHandle("tb-col-7")}</th><th></th>
           </tr></thead>
           <tbody id="tb-body">${rows}</tbody>
-          <tfoot><tr class="tb-footer-row" id="tb-footer">${tbFooterRowHtml()}</tr></tfoot>
+          <tfoot>
+            <tr class="tb-footer-row" id="tb-footer">${tbFooterRowHtml()}</tr>
+            <tr class="tb-footer-row" id="tb-footer-pl">${tbProfitRowHtml()}</tr>
+          </tfoot>
         </table>
       </div>`;
   }
@@ -7659,7 +7700,7 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
         if (adjEl) adjEl.value = (netCy - netTb) || "";
         recompute();
         renderStatusRow(); renderBalanceBar();
-        document.getElementById("tb-footer").innerHTML = tbFooterRowHtml();
+        refreshTbFooter();
         return;
       }
       if (row && t.dataset.tbTrial !== undefined) {
@@ -7677,7 +7718,7 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
         if (finalEl) finalEl.value = newFinal || "";
         recompute();
         renderStatusRow(); renderBalanceBar();
-        document.getElementById("tb-footer").innerHTML = tbFooterRowHtml();
+        refreshTbFooter();
         return;
       }
       if (row && t.dataset.tbAdj !== undefined) {
@@ -7690,13 +7731,13 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
         if (finalEl) finalEl.value = newFinal || "";
         recompute();
         renderStatusRow(); renderBalanceBar();
-        document.getElementById("tb-footer").innerHTML = tbFooterRowHtml();
+        refreshTbFooter();
         return;
       }
       if (row && t.dataset.tbPrior2 !== undefined) {
         const i = Number(row.dataset.row);
         STATE.tb_rows[i].balance_2yb = parseNum(t.value);
-        document.getElementById("tb-footer").innerHTML = tbFooterRowHtml();
+        refreshTbFooter();
         return;
       }
       if (t.dataset.mgmtCell !== undefined) {
