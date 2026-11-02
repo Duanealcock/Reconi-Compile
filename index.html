@@ -2496,7 +2496,7 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
     const newTbRows = old.tb_rows.map((r) => ({
       account_code: r.account_code, account_name: r.account_name, line_item_code: r.line_item_code,
       debit_py: Number(r.debit_cy) || 0, credit_py: Number(r.credit_cy) || 0,
-      debit_cy: 0, credit_cy: 0,
+      debit_tb: 0, credit_tb: 0, debit_cy: 0, credit_cy: 0,
       balance_2yb: (Number(r.debit_py) || 0) - (Number(r.credit_py) || 0),
     }));
 
@@ -2561,6 +2561,8 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
       line_item_code: r.line_item_code,
       debit_py: Number(r.debit_cy) || 0,
       credit_py: Number(r.credit_cy) || 0,
+      debit_tb: 0,
+      credit_tb: 0,
       debit_cy: 0,
       credit_cy: 0,
       balance_2yb: (Number(r.debit_py) || 0) - (Number(r.credit_py) || 0),
@@ -3565,11 +3567,23 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
     document.addEventListener("keydown", onMappingPopoverKeydown, true);
   }
 
+  // A row's unadjusted Trial Balance figure, separate from its Final (CY)
+  // figure. Rows created before this column existed have no debit_tb/
+  // credit_tb at all -- for those, Trial balance falls back to the current
+  // Final figure (i.e. "no adjustments posted yet"), so older clients read
+  // exactly as they did before this column was added.
+  function netTbOf(r) {
+    if (r.debit_tb === undefined && r.credit_tb === undefined) {
+      return (Number(r.debit_cy) || 0) - (Number(r.credit_cy) || 0);
+    }
+    return (Number(r.debit_tb) || 0) - (Number(r.credit_tb) || 0);
+  }
   function tbFooterRowHtml() {
     const t = compiled.tbCheck.totals;
     const openingTotal = t.debit_py - t.credit_py;
     const finalTotal = t.debit_cy - t.credit_cy;
-    const adjTotal = finalTotal - openingTotal;
+    const tbTotal = STATE.tb_rows.reduce((a, r) => a + netTbOf(r), 0);
+    const adjTotal = finalTotal - tbTotal;
     const prior2Total = STATE.tb_rows.reduce((a, r) => a + (Number(r.balance_2yb) || 0), 0);
     // For an Individual client there's no Capital/Retained Earnings account
     // on the Trial Balance at all (opening capital is a typed field on its
@@ -3583,12 +3597,13 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
     // explanatory note here instead -- the real balance check for this
     // client type is the Balansstaat's own Bates = Ekwiteit & Laste tie-out.
     if (isIndividual()) {
-      return `<td colspan="9" class="muted" style="text-align:left; padding:10px 8px; font-style:italic;">
+      return `<td colspan="10" class="muted" style="text-align:left; padding:10px 8px; font-style:italic;">
         This total is not a balance check for an Individual client -- there is no separate Capital account on the Trial Balance, so it always equals the client's Opening Capital (currently ${fmt(openingTotal)} / ${fmt(finalTotal)}) rather than zero. See the Balansstaat page (Bates = Ekwiteit &amp; Laste) for the actual balance check.
       </td>`;
     }
     return `<td colspan="3">Total</td>
       <td class="num">${fmt(openingTotal)}</td>
+      <td class="num">${fmt(tbTotal)}</td>
       <td class="num">${fmt(adjTotal)}</td>
       <td class="num">${fmt(finalTotal)}</td>
       <td class="num">${fmt(openingTotal)}</td>
@@ -3603,13 +3618,15 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
     STATE.tb_rows.forEach((r, i) => {
       const netPy = (Number(r.debit_py) || 0) - (Number(r.credit_py) || 0);
       const netCy = (Number(r.debit_cy) || 0) - (Number(r.credit_cy) || 0);
-      const adj = netCy - netPy;
+      const netTb = netTbOf(r);
+      const adj = netCy - netTb;
       rows += `<tr data-row="${i}">
         <td class="code-col"><input type="text" data-tb-text="account_code" value="${escapeHtml(r.account_code)}" /></td>
         <td class="name-col"><input type="text" data-tb-text="account_name" value="${escapeHtml(r.account_name)}" /></td>
         <td class="li-col"><button type="button" class="mapping-trigger" data-mapping-trigger data-row="${i}" title="Click to choose a mapping">${escapeHtml(mappingLabel(r.line_item_code))}</button></td>
         <td class="num-col opening-col"><input type="number" step="any" data-tb-opening value="${netPy || ""}" readonly title="Brought forward from ${pyLabel} -- edit via the Prior Year column" /></td>
-        <td class="num-col"><input type="number" step="any" data-tb-adj value="${adj || ""}" title="Final minus Opening Balance" /></td>
+        <td class="num-col"><input type="number" step="any" data-tb-trial value="${netTb || ""}" title="Unadjusted trial balance, as imported" /></td>
+        <td class="num-col"><input type="number" step="any" data-tb-adj value="${adj || ""}" title="Final minus Trial balance" /></td>
         <td class="num-col"><input type="number" step="any" data-tb-net="cy" value="${netCy || ""}" /></td>
         <td class="num-col"><input type="number" step="any" data-tb-net="py" value="${netPy || ""}" /></td>
         <td class="num-col"><input type="number" step="any" data-tb-prior2 value="${r.balance_2yb || ""}" title="Reference only -- not used in the compiled statements" /></td>
@@ -3618,7 +3635,7 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
     });
     return `
       <h2>Trial Balance</h2>
-      <p class="lede">One row per GL account. Map each to a standard line item -- everything downstream recompiles automatically. Opening Balance mirrors the ${pyLabel} closing figure; Adjustments and Final move together (edit either one). ${prior2Label} is a reference comparative only and doesn't feed the compiled statements. Import an Excel workbook (.xlsx) to bring in a new client's trial balance -- first sheet, header row with columns: account_code, account_name, line_item_code, debit_py, credit_py, debit_cy, credit_cy, balance_2yb.</p>
+      <p class="lede">One row per GL account. Map each to a standard line item -- everything downstream recompiles automatically. Opening Balance mirrors the ${pyLabel} closing figure. Trial balance is the unadjusted figure as imported; ADJ and Final move together against it (edit either one) while Trial balance stays put, so Trial balance + ADJ always equals Final. ${prior2Label} is a reference comparative only and doesn't feed the compiled statements. Import an Excel workbook (.xlsx) to bring in a new client's trial balance -- first sheet, header row with columns: account_code, account_name, line_item_code, debit_py, credit_py, debit_cy, credit_cy, balance_2yb, and optionally debit_tb, credit_tb (defaults to the Final figures when omitted).</p>
       <div style="display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap;">
         <button class="btn small" data-action="tb-add">+ Add row</button>
         <button class="btn small" data-action="tb-import">Import Excel</button>
@@ -3632,6 +3649,7 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
             <col id="tb-col-1" style="width:${colWidth("tb-col-1", 210)}px">
             <col id="tb-col-2" style="width:${colWidth("tb-col-2", 200)}px">
             <col id="tb-col-3" style="width:${colWidth("tb-col-3", 105)}px">
+            <col id="tb-col-3t" style="width:${colWidth("tb-col-3t", 105)}px">
             <col id="tb-col-4" style="width:${colWidth("tb-col-4", 105)}px">
             <col id="tb-col-5" style="width:${colWidth("tb-col-5", 105)}px">
             <col id="tb-col-6" style="width:${colWidth("tb-col-6", 105)}px">
@@ -3640,7 +3658,7 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
           </colgroup>
           <thead><tr>
             <th>Account No${resizeHandle("tb-col-0")}</th><th>Account Name${resizeHandle("tb-col-1")}</th><th>Mapping${resizeHandle("tb-col-2")}</th>
-            <th class="num">Opening Balance${resizeHandle("tb-col-3")}</th><th class="num">Adjustments${resizeHandle("tb-col-4")}</th><th class="num">Final ${cyLabel}${resizeHandle("tb-col-5")}</th>
+            <th class="num">Opening Balance${resizeHandle("tb-col-3")}</th><th class="num">Trial balance${resizeHandle("tb-col-3t")}</th><th class="num">ADJ${resizeHandle("tb-col-4")}</th><th class="num">Final ${cyLabel}${resizeHandle("tb-col-5")}</th>
             <th class="num">Prior Year ${pyLabel}${resizeHandle("tb-col-6")}</th><th class="num">Prior Year ${prior2Label}${resizeHandle("tb-col-7")}</th><th></th>
           </tr></thead>
           <tbody id="tb-body">${rows}</tbody>
@@ -3656,7 +3674,7 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
   // variable number of columns (Management Accounts gains a column per
   // month) works the same way as one with a fixed layout. Kept in memory
   // only, so widths survive re-renders for as long as the page stays open.
-  const COL_WIDTHS = { "tb-col-0": 90, "tb-col-1": 210, "tb-col-2": 200, "tb-col-3": 105, "tb-col-4": 105, "tb-col-5": 105, "tb-col-6": 105, "tb-col-7": 105, "tb-col-8": 34 };
+  const COL_WIDTHS = { "tb-col-0": 90, "tb-col-1": 210, "tb-col-2": 200, "tb-col-3": 105, "tb-col-3t": 105, "tb-col-4": 105, "tb-col-5": 105, "tb-col-6": 105, "tb-col-7": 105, "tb-col-8": 34 };
   function colWidth(colId, fallback) { return COL_WIDTHS[colId] || fallback; }
   function resizeHandle(colId) { return `<span class="col-resize-handle" data-col-resize="${colId}"></span>`; }
   // table-layout:fixed stretches every <col> proportionally to fill the
@@ -7228,11 +7246,16 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
   // parseXlsxRows() reads back in, so exporting and re-importing round-trips
   // cleanly.
   function tbToWorkbook() {
-    const header = ["account_code", "account_name", "line_item_code", "debit_py", "credit_py", "debit_cy", "credit_cy", "balance_2yb"];
-    const data = [header, ...STATE.tb_rows.map((r) => [
-      r.account_code || "", r.account_name || "", r.line_item_code || "",
-      r.debit_py || 0, r.credit_py || 0, r.debit_cy || 0, r.credit_cy || 0, r.balance_2yb || 0,
-    ])];
+    const header = ["account_code", "account_name", "line_item_code", "debit_py", "credit_py", "debit_tb", "credit_tb", "debit_cy", "credit_cy", "balance_2yb"];
+    const data = [header, ...STATE.tb_rows.map((r) => {
+      const netTb = netTbOf(r);
+      return [
+        r.account_code || "", r.account_name || "", r.line_item_code || "",
+        r.debit_py || 0, r.credit_py || 0,
+        netTb > 0 ? netTb : 0, netTb < 0 ? -netTb : 0,
+        r.debit_cy || 0, r.credit_cy || 0, r.balance_2yb || 0,
+      ];
+    })];
     const sheet = XLSX.utils.aoa_to_sheet(data);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, sheet, "Trial Balance");
@@ -7253,7 +7276,8 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
     const header = grid[0].map((h) => String(h == null ? "" : h).trim().toLowerCase());
     const col = (name) => header.indexOf(name);
     const iCode = col("account_code"), iName = col("account_name"), iLine = col("line_item_code"),
-      iDPy = col("debit_py"), iCPy = col("credit_py"), iDCy = col("debit_cy"), iCCy = col("credit_cy"), iBal2 = col("balance_2yb");
+      iDPy = col("debit_py"), iCPy = col("credit_py"), iDCy = col("debit_cy"), iCCy = col("credit_cy"), iBal2 = col("balance_2yb"),
+      iDTb = col("debit_tb"), iCTb = col("credit_tb");
     const rows = [];
     for (let r = 1; r < grid.length; r++) {
       const row = grid[r];
@@ -7261,14 +7285,21 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
       const code = iCode >= 0 ? row[iCode] : "";
       const name = iName >= 0 ? row[iName] : "";
       if (!String(code || "").trim() && !String(name || "").trim()) continue;
+      const debit_cy = iDCy >= 0 ? parseNum(row[iDCy]) : 0;
+      const credit_cy = iCCy >= 0 ? parseNum(row[iCCy]) : 0;
+      // debit_tb/credit_tb are an optional pair of columns -- a workbook
+      // without them (including every file built before this column
+      // existed) imports with Trial balance = Final, i.e. no adjustments
+      // posted yet, same as a brand-new row.
       rows.push({
         account_code: String(code || "").trim(),
         account_name: String(name || "").trim(),
         line_item_code: iLine >= 0 ? String(row[iLine] || "").trim() : "",
         debit_py: iDPy >= 0 ? parseNum(row[iDPy]) : 0,
         credit_py: iCPy >= 0 ? parseNum(row[iCPy]) : 0,
-        debit_cy: iDCy >= 0 ? parseNum(row[iDCy]) : 0,
-        credit_cy: iCCy >= 0 ? parseNum(row[iCCy]) : 0,
+        debit_tb: iDTb >= 0 ? parseNum(row[iDTb]) : debit_cy,
+        credit_tb: iCTb >= 0 ? parseNum(row[iCTb]) : credit_cy,
+        debit_cy, credit_cy,
         balance_2yb: iBal2 >= 0 ? parseNum(row[iBal2]) : 0,
       });
     }
@@ -7345,7 +7376,7 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
         const act = action.dataset.action;
         if (act === "print") { window.print(); return; }
         if (act === "tb-add") {
-          STATE.tb_rows.push({ account_code: "", account_name: "New account", line_item_code: "", debit_py: 0, credit_py: 0, debit_cy: 0, credit_cy: 0, balance_2yb: 0 });
+          STATE.tb_rows.push({ account_code: "", account_name: "New account", line_item_code: "", debit_py: 0, credit_py: 0, debit_tb: 0, credit_tb: 0, debit_cy: 0, credit_cy: 0, balance_2yb: 0 });
           recompute(); renderAll(); return;
         }
         if (act === "tb-delete") {
@@ -7623,8 +7654,27 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
         const netCy = yr === "cy" ? v : otherNet;
         const openingEl = row.querySelector("[data-tb-opening]");
         if (openingEl) openingEl.value = netPy || "";
+        const netTb = netTbOf(STATE.tb_rows[i]);
         const adjEl = row.querySelector("[data-tb-adj]");
-        if (adjEl) adjEl.value = (netCy - netPy) || "";
+        if (adjEl) adjEl.value = (netCy - netTb) || "";
+        recompute();
+        renderStatusRow(); renderBalanceBar();
+        document.getElementById("tb-footer").innerHTML = tbFooterRowHtml();
+        return;
+      }
+      if (row && t.dataset.tbTrial !== undefined) {
+        const i = Number(row.dataset.row);
+        const r = STATE.tb_rows[i];
+        const oldNetCy = (Number(r.debit_cy) || 0) - (Number(r.credit_cy) || 0);
+        const adjValue = oldNetCy - netTbOf(r); // keep the posted adjustment constant
+        const newNetTb = parseNum(t.value);
+        r.debit_tb = newNetTb >= 0 ? newNetTb : 0;
+        r.credit_tb = newNetTb < 0 ? -newNetTb : 0;
+        const newFinal = newNetTb + adjValue;
+        r.debit_cy = newFinal >= 0 ? newFinal : 0;
+        r.credit_cy = newFinal < 0 ? -newFinal : 0;
+        const finalEl = row.querySelector('[data-tb-net="cy"]');
+        if (finalEl) finalEl.value = newFinal || "";
         recompute();
         renderStatusRow(); renderBalanceBar();
         document.getElementById("tb-footer").innerHTML = tbFooterRowHtml();
@@ -7632,8 +7682,8 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
       }
       if (row && t.dataset.tbAdj !== undefined) {
         const i = Number(row.dataset.row);
-        const netPy = (Number(STATE.tb_rows[i].debit_py) || 0) - (Number(STATE.tb_rows[i].credit_py) || 0);
-        const newFinal = netPy + parseNum(t.value);
+        const netTb = netTbOf(STATE.tb_rows[i]);
+        const newFinal = netTb + parseNum(t.value);
         STATE.tb_rows[i].debit_cy = newFinal >= 0 ? newFinal : 0;
         STATE.tb_rows[i].credit_cy = newFinal < 0 ? -newFinal : 0;
         const finalEl = row.querySelector('[data-tb-net="cy"]');
