@@ -6386,7 +6386,13 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
   function afsPage(navKey, title, bodyHtml, opts) {
     opts = opts || {};
     const e = STATE.entity;
-    const pageNum = AFS_PAGE_ORDER.indexOf(navKey) + 1;
+    // A page built by splitting one section across several physical pages
+    // (see buildNotesPages()) passes its own running page number here
+    // instead of the one-page-per-navKey lookup everything else uses, and
+    // forces a print page-break before itself so it never shares a sheet
+    // with the page before it.
+    const pageNum = opts.pageNumOverride != null ? opts.pageNumOverride : AFS_PAGE_ORDER.indexOf(navKey) + 1;
+    const cardClass = opts.forcePageBreak ? "card afs-page print-page-break" : "card afs-page";
     const periodPhrase = opts.periodPhrase || `for the year ended ${fmtDate(e.financial_year_end)}`;
     // Page Title and Header/Footer's "space before first line" apply the
     // same way on every page that routes through here -- Cover Page has
@@ -6400,7 +6406,7 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
     // trick that keeps Cover Page's own spacing scale-consistent applies
     // here too -- see coverWidthPct's comment for why width, not height.
     const titleTopStyle = spaceBefore ? `margin-top:${coverWidthPct(spaceBefore)};` : "";
-    return `<div class="card afs-page" style="font-size:${e.font_size_pt || 9}pt;">
+    return `<div class="${cardClass}" style="font-size:${e.font_size_pt || 9}pt;">
       <div class="afs-header">
         <div class="afs-header-entity">${escapeHtml(e.name)}</div>
         <div class="afs-header-reg">(Registration number: ${escapeHtml(e.registration_number)})</div>
@@ -6562,7 +6568,10 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
     const frameworkName = e.reporting_framework.replace(/\s*\([^)]*\)\s*$/, "");
     const nextYearEnd = fmtDate(yearsBack(e.financial_year_end, -1));
     const pageFrom = AFS_PAGE_ORDER.indexOf("sfp") + 1;
-    const pageTo = AFS_PAGE_ORDER.indexOf("notes") + 1;
+    // Notes can now span more than one physical page (see
+    // buildNotesPages()), so "pages X to Y" needs the true last page of
+    // the notes section, not just where that section starts.
+    const pageTo = AFS_PAGE_ORDER.indexOf("notes") + buildNotesPages().length;
     // Page Column Heading has nothing to attach to on this prose-only page
     // (no table with column labels) -- left unwired, same as General
     // Information's unused Body Heading L1.
@@ -7054,50 +7063,128 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
       </div>
     </div>`;
   }
-  function viewNotes() {
+  // Every note, in print order, as one HTML string per note (not
+  // concatenated) -- buildNotesPages() below needs each note as its own
+  // measurable unit so it can tell how many fit on a page; viewNotes()
+  // itself no longer cares about note boundaries at all.
+  function notesBlockList() {
+    return [
+      ppeNoteBlock(),
+      maybeNoteBlock("INVPROPFV"),
+      maybeNoteBlock("INVPROPCOST"),
+      maybeNoteBlock("LEASEHOLD"),
+      maybeNoteBlock("BIOCONSUMABLE"),
+      maybeNoteBlock("BIOBEARER"),
+      intangiblesNoteBlock(),
+      maybeNoteBlock("GOODWILL"),
+      noteBlock("INVESTMENTS", "Investments comprise an unlisted equity investment, held at cost."),
+      maybeNoteBlock("INVSUBS"),
+      maybeNoteBlock("INVJV"),
+      maybeNoteBlock("INVASSOC"),
+      maybeNoteBlock("LOANGROUPCO"),
+      maybeNoteBlock("LOANMEMBERS"),
+      maybeNoteBlock("LOANOWNERS"),
+      maybeNoteBlock("LOANBENEFICIARIES"),
+      maybeNoteBlock("LOANBODYCORP"),
+      maybeNoteBlock("OTHERFIN"),
+      maybeNoteBlock("NCADEFTAX"),
+      maybeNoteBlock("FINANCELEASE"),
+      maybeNoteBlock("OPLEASE"),
+      maybeNoteBlock("NCAPREPAY"),
+      maybeNoteBlock("RETBENEFIT"),
+      maybeNoteBlock("BODYCORPDEPOSIT"),
+      maybeNoteBlock("OTHERASSET1"),
+      maybeNoteBlock("OTHERASSET2"),
+      maybeNoteBlock("OTHERASSET3"),
+      noteBlock("INVENTORY"),
+      noteBlock("RECEIVABLES"),
+      noteBlock("CASH", "A negative balance represents a bank overdraft."),
+      noteBlock("SHARECAP"),
+      noteBlock("RESERVES", "The general reserve represents amounts appropriated from retained earnings by the directors; it is not distributable."),
+      borrowingsNoteBlock(),
+      noteBlock("DEFTAX", "The deferred tax liability arises principally from temporary differences between the tax and accounting carrying values of property, plant and equipment."),
+      noteBlock("PAYABLES"),
+      noteBlock("TAXPAYABLE"),
+      noteBlock("REVENUE", "Revenue comprises the sale of goods and services rendered, net of value added tax."),
+      operatingProfitNoteBlock(),
+      financeNoteBlock(),
+      taxNoteBlock(),
+    ].filter(Boolean);
+  }
+
+  // Splits the notes into as many separate printed pages as they actually
+  // need -- "natural flow" pagination, the same way a real printed report
+  // paginates: a page fills up with whole notes before the next page
+  // starts, rather than one note per page regardless of length.
+  //
+  // This needs real layout, not arithmetic -- how tall a note renders
+  // depends on the client's own data (how many PPE classes, how many
+  // lines in a breakdown, the page's own font size and justification
+  // settings), so it's measured directly: an invisible copy of one AFS
+  // page (same classes, same ancestor, so every style rule that would
+  // apply to the real thing applies here too) is dropped into the live
+  // #main just long enough to read real pixel heights off it, then
+  // removed before anything is painted.
+  //
+  // Measuring in two passes on that one throwaway page, rather than one:
+  // first with an EMPTY body, so the footer's `margin-top:auto` (see
+  // .afs-footer) pushes it all the way to the bottom of one true page --
+  // the gap between where the body starts and where the footer lands IS
+  // one page's worth of body room. Then the real notes are dropped into
+  // that same body div just to read each note's own rendered height;
+  // by then the footer has been shoved far below the page (nothing stops
+  // this detached, unpainted div from growing as tall as it needs to),
+  // which would make the same trick measure the wrong thing, so the
+  // page-room figure has to come from the first, empty-body pass.
+  function buildNotesPages() {
+    const title = "Notes to the Annual Financial Statements";
     const notesWrapStyle = afsJustificationIndentStyle(STATE.page_settings.notes.justification_indent);
-    return noteTogglePanelHtml() + afsPage("notes", "Notes to the Annual Financial Statements", `<div style="${notesWrapStyle}">
-        ${ppeNoteBlock()}
-        ${maybeNoteBlock("INVPROPFV")}
-        ${maybeNoteBlock("INVPROPCOST")}
-        ${maybeNoteBlock("LEASEHOLD")}
-        ${maybeNoteBlock("BIOCONSUMABLE")}
-        ${maybeNoteBlock("BIOBEARER")}
-        ${intangiblesNoteBlock()}
-        ${maybeNoteBlock("GOODWILL")}
-        ${noteBlock("INVESTMENTS", "Investments comprise an unlisted equity investment, held at cost.")}
-        ${maybeNoteBlock("INVSUBS")}
-        ${maybeNoteBlock("INVJV")}
-        ${maybeNoteBlock("INVASSOC")}
-        ${maybeNoteBlock("LOANGROUPCO")}
-        ${maybeNoteBlock("LOANMEMBERS")}
-        ${maybeNoteBlock("LOANOWNERS")}
-        ${maybeNoteBlock("LOANBENEFICIARIES")}
-        ${maybeNoteBlock("LOANBODYCORP")}
-        ${maybeNoteBlock("OTHERFIN")}
-        ${maybeNoteBlock("NCADEFTAX")}
-        ${maybeNoteBlock("FINANCELEASE")}
-        ${maybeNoteBlock("OPLEASE")}
-        ${maybeNoteBlock("NCAPREPAY")}
-        ${maybeNoteBlock("RETBENEFIT")}
-        ${maybeNoteBlock("BODYCORPDEPOSIT")}
-        ${maybeNoteBlock("OTHERASSET1")}
-        ${maybeNoteBlock("OTHERASSET2")}
-        ${maybeNoteBlock("OTHERASSET3")}
-        ${noteBlock("INVENTORY")}
-        ${noteBlock("RECEIVABLES")}
-        ${noteBlock("CASH", "A negative balance represents a bank overdraft.")}
-        ${noteBlock("SHARECAP")}
-        ${noteBlock("RESERVES", "The general reserve represents amounts appropriated from retained earnings by the directors; it is not distributable.")}
-        ${borrowingsNoteBlock()}
-        ${noteBlock("DEFTAX", "The deferred tax liability arises principally from temporary differences between the tax and accounting carrying values of property, plant and equipment.")}
-        ${noteBlock("PAYABLES")}
-        ${noteBlock("TAXPAYABLE")}
-        ${noteBlock("REVENUE", "Revenue comprises the sale of goods and services rendered, net of value added tax.")}
-        ${operatingProfitNoteBlock()}
-        ${financeNoteBlock()}
-        ${taxNoteBlock()}
-    </div>`);
+    const blocksHtml = notesBlockList();
+    if (!blocksHtml.length) {
+      return [afsPage("notes", title, `<div style="${notesWrapStyle}"></div>`)];
+    }
+
+    const main = document.getElementById("main");
+    let groups = null;
+    if (main) {
+      const probe = document.createElement("div");
+      probe.style.cssText = "position:absolute; visibility:hidden; pointer-events:none; left:0; top:0; width:100%;";
+      probe.innerHTML = afsPage("notes", title, `<div id="notes-probe-body" style="${notesWrapStyle}"></div>`);
+      main.appendChild(probe);
+      const bodyWrap = probe.querySelector("#notes-probe-body");
+      const footer = probe.querySelector(".afs-footer");
+      const availableHeight = footer.getBoundingClientRect().top - bodyWrap.getBoundingClientRect().top;
+      bodyWrap.innerHTML = blocksHtml.join("");
+      const heights = Array.from(bodyWrap.children).map((el) =>
+        el.getBoundingClientRect().height + (parseFloat(getComputedStyle(el).marginBottom) || 0));
+      main.removeChild(probe);
+
+      if (availableHeight > 0) {
+        groups = [];
+        let cur = [], used = 0;
+        blocksHtml.forEach((html, i) => {
+          const h = heights[i];
+          if (cur.length && used + h > availableHeight) { groups.push(cur); cur = []; used = 0; }
+          cur.push(html);
+          used += h;
+        });
+        if (cur.length) groups.push(cur);
+      }
+    }
+    // No live #main to measure against, or the measurement came back
+    // unusable (0 or negative room) -- fall back to one page with
+    // everything on it rather than guessing at a split.
+    if (!groups || !groups.length) groups = [blocksHtml];
+
+    const startPageNum = AFS_PAGE_ORDER.indexOf("notes") + 1;
+    return groups.map((g, i) => afsPage(
+      "notes", i === 0 ? title : `${title} (continued)`,
+      `<div style="${notesWrapStyle}">${g.join("")}</div>`,
+      { pageNumOverride: startPageNum + i, forcePageBreak: i > 0 }
+    ));
+  }
+  function viewNotes() {
+    return noteTogglePanelHtml() + buildNotesPages().join("");
   }
 
   // ------------------------------------------------------------------
